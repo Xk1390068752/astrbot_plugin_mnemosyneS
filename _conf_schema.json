@@ -1,0 +1,73 @@
+{
+  "enabled": {
+    "type": "bool",
+    "description": "是否启用 Mnemosyne 插件主逻辑",
+    "default": true
+  },
+  "target_persona_id": {
+    "type": "string",
+    "description": "仅在命中该人格时触发插件",
+    "hint": "插件只会拦截当前生效人格等于这个 persona_id 的私聊对话。",
+    "_special": "select_persona",
+    "default": ""
+  },
+  "private_only": {
+    "type": "bool",
+    "description": "是否只处理私聊",
+    "hint": "当前版本建议保持开启，避免群聊场景下的身份和记忆污染。",
+    "default": true
+  },
+  "database_path": {
+    "type": "string",
+    "description": "SQLite 数据库文件路径",
+    "hint": "留空则默认使用 data/plugin_data/astrbot_plugin_mnemosyne/mnemosyne.sqlite3",
+    "default": ""
+  },
+  "prompt_json_path": {
+    "type": "string",
+    "description": "提示词 JSON 文件路径",
+    "hint": "留空则默认使用 data/plugin_data/astrbot_plugin_mnemosyne/prompts.json；首次启动会自动生成。",
+    "default": ""
+  },
+  "memory_window_size": {
+    "type": "int",
+    "description": "注入提示词时读取的最近记忆条数",
+    "default": 12
+  },
+  "journal_window_size": {
+    "type": "int",
+    "description": "注入提示词时读取的最近日记条数",
+    "default": 6
+  },
+  "enable_background_journal": {
+    "type": "bool",
+    "description": "是否启用空闲时的后台日记/动态生成",
+    "default": true
+  },
+  "scheduler_poll_seconds": {
+    "type": "int",
+    "description": "后台轮询间隔（秒）",
+    "default": 120
+  },
+  "idle_threshold_minutes": {
+    "type": "int",
+    "description": "距离用户最后一次发言超过多少分钟后，允许后台生成",
+    "default": 90
+  },
+  "background_generation_cooldown_minutes": {
+    "type": "int",
+    "description": "后台生成之间的最短冷却时间（分钟）",
+    "default": 120
+  },
+  "active_push_probability": {
+    "type": "float",
+    "description": "后台生成后主动私聊的概率",
+    "hint": "0 到 1 之间，例如 0.15 代表 15% 概率。",
+    "default": 0.15
+  },
+  "active_push_cooldown_minutes": {
+    "type": "int",
+    "description": "主动私聊发送冷却时间（分钟）",
+    "default": 240
+  }
+}

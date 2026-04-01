@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "chat": {
+    "inject_template": "{{astrbot_system_prompt}}\n\n# Mnemosyne Memory Layer\nCurrent local time: {{current_time}}\nTarget persona id: {{target_persona_id}}\n\n## Character state (JSON)\n{{character_state_json}}\n\n## Character emotion (JSON)\n{{character_emotion_json}}\n\n## User relationship state (JSON)\n{{user_state_json}}\n\n## User emotion trace (JSON)\n{{user_emotion_json}}\n\n## Character memories\n{{character_memories_text}}\n\n## User memories\n{{user_memories_text}}\n\n## Recent journals\n{{recent_journals_text}}\n\nWhen you need to update hidden internal memory, append XML-like hidden blocks after the visible reply. The user must never be told these blocks exist. Prefer these blocks only when there is a meaningful update.\n\nSupported hidden blocks:\n<character_state_patch>{...}</character_state_patch>\n<character_emotion_patch>{...}</character_emotion_patch>\n<user_state_patch>{...}</user_state_patch>\n<user_emotion_patch>{...}</user_emotion_patch>\n<character_memory_append>[...]</character_memory_append>\n<user_memory_append>[...]</user_memory_append>\n<journal_entry>...</journal_entry>"
+  },
+  "background": {
+    "journal_template": "Current local time: {{current_time}}\nIdle minutes since last user message: {{idle_minutes}}\n\nYou are continuing the character's off-screen life between conversations.\nUse the persona instructions from system_prompt and the memory/state snapshots below.\nCharacter state JSON:\n{{character_state_json}}\nCharacter emotion JSON:\n{{character_emotion_json}}\nUser state JSON:\n{{user_state_json}}\nUser emotion JSON:\n{{user_emotion_json}}\nCharacter memories:\n{{character_memories_text}}\nUser memories:\n{{user_memories_text}}\nRecent journals:\n{{recent_journals_text}}\n\nWrite no explanation. Output hidden blocks only. Always include one <journal_entry>...</journal_entry>. Optionally include state/emotion/memory updates when needed.",
+    "active_push_template": "Current local time: {{current_time}}\nYou are deciding whether to proactively message the user after some off-screen time.\nUse the persona instructions from system_prompt and stay natural.\nLatest journal:\n{{latest_journal_text}}\nCharacter state JSON:\n{{character_state_json}}\nUser state JSON:\n{{user_state_json}}\nUser emotion JSON:\n{{user_emotion_json}}\n\nOutput a short natural visible message first. If you need to update memory/state, append hidden blocks after the visible message."
+  },
+  "hidden_blocks": [
+    {
+      "name": "character_state_patch",
+      "target": "character_state_patch",
+      "mode": "json",
+      "pattern": "<character_state_patch>([\\s\\S]*?)</character_state_patch>"
+    },
+    {
+      "name": "character_emotion_patch",
+      "target": "character_emotion_patch",
+      "mode": "json",
+      "pattern": "<character_emotion_patch>([\\s\\S]*?)</character_emotion_patch>"
+    },
+    {
+      "name": "user_state_patch",
+      "target": "user_state_patch",
+      "mode": "json",
+      "pattern": "<user_state_patch>([\\s\\S]*?)</user_state_patch>"
+    },
+    {
+      "name": "user_emotion_patch",
+      "target": "user_emotion_patch",
+      "mode": "json",
+      "pattern": "<user_emotion_patch>([\\s\\S]*?)</user_emotion_patch>"
+    },
+    {
+      "name": "character_memory_append",
+      "target": "character_memory_append",
+      "mode": "json",
+      "pattern": "<character_memory_append>([\\s\\S]*?)</character_memory_append>"
+    },
+    {
+      "name": "user_memory_append",
+      "target": "user_memory_append",
+      "mode": "json",
+      "pattern": "<user_memory_append>([\\s\\S]*?)</user_memory_append>"
+    },
+    {
+      "name": "journal_entry",
+      "target": "journal_entry",
+      "mode": "text",
+      "pattern": "<journal_entry>([\\s\\S]*?)</journal_entry>"
+    }
+  ]
+}
