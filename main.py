@@ -5,9 +5,19 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, register
 
-from mnemo_constants import PLUGIN_AUTHOR, PLUGIN_NAME, PLUGIN_REPO, PLUGIN_VERSION
-from mnemo_scheduler import BackgroundScheduler
-from mnemo_service import MnemosyneService
+try:
+    from .mnemo_constants import (
+        PLUGIN_AUTHOR,
+        PLUGIN_NAME,
+        PLUGIN_REPO,
+        PLUGIN_VERSION,
+    )
+    from .mnemo_scheduler import BackgroundScheduler
+    from .mnemo_service import MnemosyneService
+except ImportError:
+    from mnemo_constants import PLUGIN_AUTHOR, PLUGIN_NAME, PLUGIN_REPO, PLUGIN_VERSION
+    from mnemo_scheduler import BackgroundScheduler
+    from mnemo_service import MnemosyneService
 
 
 @register(

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mnemo_constants import DEFAULT_PROMPTS_TEMPLATE_FILENAME, PLUGIN_NAME
+try:
+    from .mnemo_constants import DEFAULT_PROMPTS_TEMPLATE_FILENAME, PLUGIN_NAME
+except ImportError:
+    from mnemo_constants import DEFAULT_PROMPTS_TEMPLATE_FILENAME, PLUGIN_NAME
 
 
 def get_plugin_root() -> Path:

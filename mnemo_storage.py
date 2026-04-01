@@ -8,7 +8,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from mnemo_constants import CHARACTER_SCOPE_KEY
+try:
+    from .mnemo_constants import CHARACTER_SCOPE_KEY
+except ImportError:
+    from mnemo_constants import CHARACTER_SCOPE_KEY
 
 
 def _json_dumps(value: Any) -> str:

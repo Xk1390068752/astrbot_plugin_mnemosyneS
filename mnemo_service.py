@@ -9,26 +9,48 @@ from astrbot.api import logger
 from astrbot.api.message_components import Plain
 from astrbot.api.platform import MessageType
 
-from mnemo_constants import (
-    CHARACTER_SCOPE,
-    CHARACTER_SCOPE_KEY,
-    DEFAULT_DB_FILENAME,
-    DEFAULT_PROMPTS_FILENAME,
-    EXTRA_ENABLED,
-    EXTRA_MATCHED_PERSONA,
-    EXTRA_PENDING_ASSISTANT,
-    EXTRA_PROVIDER_ID,
-    EXTRA_USER_TURN_ID,
-    PLUGIN_NAME,
-    SOURCE_BACKGROUND,
-    SOURCE_CHAT,
-    SOURCE_PUSH,
-    USER_SCOPE,
-)
-from mnemo_parser import HiddenBlock, parse_hidden_blocks
-from mnemo_paths import get_default_prompts_template_path, resolve_user_path
-from mnemo_prompts import PromptStore, render_template
-from mnemo_storage import MnemoStorage
+try:
+    from .mnemo_constants import (
+        CHARACTER_SCOPE,
+        CHARACTER_SCOPE_KEY,
+        DEFAULT_DB_FILENAME,
+        DEFAULT_PROMPTS_FILENAME,
+        EXTRA_ENABLED,
+        EXTRA_MATCHED_PERSONA,
+        EXTRA_PENDING_ASSISTANT,
+        EXTRA_PROVIDER_ID,
+        EXTRA_USER_TURN_ID,
+        PLUGIN_NAME,
+        SOURCE_BACKGROUND,
+        SOURCE_CHAT,
+        SOURCE_PUSH,
+        USER_SCOPE,
+    )
+    from .mnemo_parser import HiddenBlock, parse_hidden_blocks
+    from .mnemo_paths import get_default_prompts_template_path, resolve_user_path
+    from .mnemo_prompts import PromptStore, render_template
+    from .mnemo_storage import MnemoStorage
+except ImportError:
+    from mnemo_constants import (
+        CHARACTER_SCOPE,
+        CHARACTER_SCOPE_KEY,
+        DEFAULT_DB_FILENAME,
+        DEFAULT_PROMPTS_FILENAME,
+        EXTRA_ENABLED,
+        EXTRA_MATCHED_PERSONA,
+        EXTRA_PENDING_ASSISTANT,
+        EXTRA_PROVIDER_ID,
+        EXTRA_USER_TURN_ID,
+        PLUGIN_NAME,
+        SOURCE_BACKGROUND,
+        SOURCE_CHAT,
+        SOURCE_PUSH,
+        USER_SCOPE,
+    )
+    from mnemo_parser import HiddenBlock, parse_hidden_blocks
+    from mnemo_paths import get_default_prompts_template_path, resolve_user_path
+    from mnemo_prompts import PromptStore, render_template
+    from mnemo_storage import MnemoStorage
 
 
 def _safe_json(value: Any) -> str:
