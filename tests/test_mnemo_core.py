@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mnemo_parser import parse_hidden_blocks
+from mnemo_parser import has_mnemosyne_meta, parse_hidden_blocks, parse_mnemosyne_response
 from mnemo_prompts import PromptStore, render_template
 from mnemo_storage import MnemoStorage
 
@@ -85,6 +85,54 @@ class ParserTests(unittest.TestCase):
         )
         self.assertEqual(parsed.visible_text, "")
         self.assertEqual(parsed.blocks[0].payload["_parse_error"], "json")
+
+    def test_parse_mnemosyne_response_requires_outer_wrapper(self):
+        parsed = parse_mnemosyne_response(
+            "visible\n<mnemosyne_meta><user_state_patch>{\"mood\":\"warm\"}</user_state_patch><journal_entry>note</journal_entry></mnemosyne_meta>",
+            [
+                {
+                    "name": "mnemosyne_meta",
+                    "target": "mnemosyne_meta",
+                    "mode": "text",
+                    "pattern": "<mnemosyne_meta>([\\s\\S]*?)</mnemosyne_meta>",
+                },
+                {
+                    "name": "user_state_patch",
+                    "target": "user_state_patch",
+                    "mode": "json",
+                    "pattern": "<user_state_patch>([\\s\\S]*?)</user_state_patch>",
+                },
+                {
+                    "name": "journal_entry",
+                    "target": "journal_entry",
+                    "mode": "text",
+                    "pattern": "<journal_entry>([\\s\\S]*?)</journal_entry>",
+                },
+            ],
+        )
+        self.assertTrue(parsed.meta_present)
+        self.assertEqual(parsed.visible_text, "visible")
+        self.assertEqual(parsed.blocks[0].target, "user_state_patch")
+        self.assertEqual(parsed.blocks[0].payload["mood"], "warm")
+        self.assertEqual(parsed.blocks[1].target, "journal_entry")
+        self.assertEqual(parsed.blocks[1].payload, "note")
+
+    def test_parse_mnemosyne_response_without_wrapper_ignores_inner_blocks(self):
+        parsed = parse_mnemosyne_response(
+            "visible\n<user_state_patch>{\"mood\":\"warm\"}</user_state_patch>",
+            [
+                {
+                    "name": "user_state_patch",
+                    "target": "user_state_patch",
+                    "mode": "json",
+                    "pattern": "<user_state_patch>([\\s\\S]*?)</user_state_patch>",
+                }
+            ],
+        )
+        self.assertFalse(parsed.meta_present)
+        self.assertEqual(parsed.visible_text, "visible")
+        self.assertEqual(parsed.blocks[0].payload["mood"], "warm")
+        self.assertFalse(has_mnemosyne_meta(parsed.visible_text))
 
 
 class StorageTests(unittest.IsolatedAsyncioTestCase):

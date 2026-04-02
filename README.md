@@ -10,6 +10,7 @@
 - 按概率主动向最近私聊用户发起消息
 - 通过隐藏标签从模型回复中提取结构化内容，并在发给用户前剥离
 - 把发送给 LLM 的请求和收到的响应记录为 `jsonl` 调试日志
+- 采用强制性的 `<mnemosyne_meta>...</mnemosyne_meta>` 隐藏协议包装记忆更新
 
 ## 目录说明
 
@@ -49,6 +50,8 @@
 
 插件默认采用类似 SillyTavern 的隐藏标签机制。模型可以在可见回复后追加这些标签：
 
+- 外层必须是 `<mnemosyne_meta>...</mnemosyne_meta>`
+
 - `<character_state_patch>{...}</character_state_patch>`
 - `<character_emotion_patch>{...}</character_emotion_patch>`
 - `<user_state_patch>{...}</user_state_patch>`
@@ -61,6 +64,10 @@
 - 捕获这些标签
 - 将内容写入数据库
 - 在发给用户前把这些标签从正文剥离
+
+如果本轮没有需要写入的内容，模型也必须输出空包装：
+
+- `<mnemosyne_meta></mnemosyne_meta>`
 
 ## prompts.json 编辑说明
 

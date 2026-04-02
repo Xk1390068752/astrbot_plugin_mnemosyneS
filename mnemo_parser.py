@@ -18,6 +18,7 @@ class HiddenBlock:
 class ParsedResponse:
     visible_text: str
     blocks: list[HiddenBlock]
+    meta_present: bool = False
 
 
 def _extract_content(match: re.Match[str]) -> str:
@@ -80,4 +81,52 @@ def parse_hidden_blocks(text: str, specs: list[dict[str, Any]]) -> ParsedRespons
 
         visible_text = compiled.sub("", visible_text)
 
-    return ParsedResponse(visible_text=_cleanup_visible_text(visible_text), blocks=blocks)
+    return ParsedResponse(
+        visible_text=_cleanup_visible_text(visible_text),
+        blocks=blocks,
+        meta_present=False,
+    )
+
+
+MNEMOSYNE_META_PATTERN = re.compile(
+    r"<mnemosyne_meta>([\s\S]*?)</mnemosyne_meta>",
+    re.DOTALL,
+)
+
+
+def has_mnemosyne_meta(text: str) -> bool:
+    if not text:
+        return False
+    return bool(MNEMOSYNE_META_PATTERN.search(text))
+
+
+def parse_mnemosyne_response(text: str, specs: list[dict[str, Any]]) -> ParsedResponse:
+    if not text:
+        return ParsedResponse(visible_text="", blocks=[], meta_present=False)
+
+    matches = list(MNEMOSYNE_META_PATTERN.finditer(text))
+    if not matches:
+        legacy_parsed = parse_hidden_blocks(text, specs)
+        return ParsedResponse(
+            visible_text=legacy_parsed.visible_text,
+            blocks=legacy_parsed.blocks,
+            meta_present=False,
+        )
+
+    blocks: list[HiddenBlock] = []
+    filtered_specs = [
+        spec
+        for spec in (specs or [])
+        if str(spec.get("target", "") or "") != "mnemosyne_meta"
+    ]
+    for match in matches:
+        inner_text = _extract_content(match)
+        inner_parsed = parse_hidden_blocks(inner_text, filtered_specs)
+        blocks.extend(inner_parsed.blocks)
+
+    visible_text = MNEMOSYNE_META_PATTERN.sub("", text)
+    return ParsedResponse(
+        visible_text=_cleanup_visible_text(visible_text),
+        blocks=blocks,
+        meta_present=True,
+    )

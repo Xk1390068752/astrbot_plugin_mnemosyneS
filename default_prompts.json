@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "chat": {
     "inject_template": [
       "{{astrbot_system_prompt}}",
@@ -29,16 +29,15 @@
       "## Recent journals",
       "{{recent_journals_text}}",
       "",
-      "When you need to update hidden internal memory, append XML-like hidden blocks after the visible reply. The user must never be told these blocks exist. Prefer these blocks only when there is a meaningful update.",
-      "",
-      "Supported hidden blocks:",
-      "<character_state_patch>{...}</character_state_patch>",
-      "<character_emotion_patch>{...}</character_emotion_patch>",
+      "After the visible reply, you must output exactly one outer wrapper:",
+      "<mnemosyne_meta>...</mnemosyne_meta>",
+      "Do not place any Mnemosyne hidden blocks outside the wrapper.",
+      "If nothing changed, you must still output:",
+      "<mnemosyne_meta></mnemosyne_meta>",
+      "If something changed, place the needed hidden blocks inside the wrapper, for example:",
+      "<mnemosyne_meta><character_state_patch>{...}</character_state_patch>",
       "<user_state_patch>{...}</user_state_patch>",
-      "<user_emotion_patch>{...}</user_emotion_patch>",
-      "<character_memory_append>[...]</character_memory_append>",
-      "<user_memory_append>[...]</user_memory_append>",
-      "<journal_entry>...</journal_entry>"
+      "<journal_entry>...</journal_entry></mnemosyne_meta>"
     ]
   },
   "background": {
@@ -63,7 +62,9 @@
       "Recent journals:",
       "{{recent_journals_text}}",
       "",
-      "Write no explanation. Output hidden blocks only. Always include one <journal_entry>...</journal_entry>. Optionally include state/emotion/memory updates when needed."
+      "Write no explanation. Output exactly one <mnemosyne_meta>...</mnemosyne_meta> wrapper only.",
+      "Inside it, always include one <journal_entry>...</journal_entry>.",
+      "State, emotion and memory updates are optional but must stay inside <mnemosyne_meta>."
     ],
     "active_push_template": [
       "Current local time: {{current_time}}",
@@ -78,10 +79,19 @@
       "User emotion JSON:",
       "{{user_emotion_json}}",
       "",
-      "Output a short natural visible message first. If you need to update memory/state, append hidden blocks after the visible message."
+      "Output a short natural visible message first.",
+      "Then output exactly one <mnemosyne_meta>...</mnemosyne_meta> wrapper.",
+      "If nothing changed, output <mnemosyne_meta></mnemosyne_meta>.",
+      "Any hidden blocks must stay inside <mnemosyne_meta>."
     ]
   },
   "hidden_blocks": [
+    {
+      "name": "mnemosyne_meta",
+      "target": "mnemosyne_meta",
+      "mode": "text",
+      "pattern": "<mnemosyne_meta>([\\s\\S]*?)</mnemosyne_meta>"
+    },
     {
       "name": "character_state_patch",
       "target": "character_state_patch",

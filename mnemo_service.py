@@ -30,7 +30,7 @@ try:
         SOURCE_PUSH,
         USER_SCOPE,
     )
-    from .mnemo_parser import HiddenBlock, parse_hidden_blocks
+    from .mnemo_parser import HiddenBlock, has_mnemosyne_meta, parse_mnemosyne_response
     from .mnemo_paths import get_default_prompts_template_path, resolve_user_path
     from .mnemo_prompts import PromptStore, render_template
     from .mnemo_raw_logger import RawLLMLogger
@@ -55,7 +55,7 @@ except ImportError:
         SOURCE_PUSH,
         USER_SCOPE,
     )
-    from mnemo_parser import HiddenBlock, parse_hidden_blocks
+    from mnemo_parser import HiddenBlock, has_mnemosyne_meta, parse_mnemosyne_response
     from mnemo_paths import get_default_prompts_template_path, resolve_user_path
     from mnemo_prompts import PromptStore, render_template
     from mnemo_raw_logger import RawLLMLogger
@@ -139,6 +139,35 @@ def _extract_hidden_block_hits(text: str, specs: list[dict[str, Any]]) -> list[s
         except re.error:
             continue
     return hits
+
+
+def _mnemosyne_protocol_contract() -> str:
+    return (
+        "Mnemosyne output protocol is mandatory.\n"
+        "After the visible reply, you MUST output exactly one outer wrapper:\n"
+        "<mnemosyne_meta>...</mnemosyne_meta>\n"
+        "Do not place any Mnemosyne hidden blocks outside <mnemosyne_meta>.\n"
+        "Inside <mnemosyne_meta>, include any needed hidden blocks such as:\n"
+        "<character_state_patch>{...}</character_state_patch>\n"
+        "<character_emotion_patch>{...}</character_emotion_patch>\n"
+        "<user_state_patch>{...}</user_state_patch>\n"
+        "<user_emotion_patch>{...}</user_emotion_patch>\n"
+        "<character_memory_append>[...]</character_memory_append>\n"
+        "<user_memory_append>[...]</user_memory_append>\n"
+        "<journal_entry>...</journal_entry>\n"
+        "If nothing changed, you must still output an empty wrapper exactly as:\n"
+        "<mnemosyne_meta></mnemosyne_meta>\n"
+        "If another hidden appendix is also required by the system, place "
+        "<mnemosyne_meta> before that appendix."
+    )
+
+
+def _append_protocol_contract(text: str) -> str:
+    base = (text or "").strip()
+    contract = _mnemosyne_protocol_contract()
+    if contract in base:
+        return base
+    return f"{base}\n\n{contract}".strip()
 
 
 class MnemosyneService:
@@ -389,6 +418,7 @@ class MnemosyneService:
             req.system_prompt = f"{req.system_prompt or ''}\n\n{rendered_prompt}".strip()
         else:
             req.system_prompt = rendered_prompt
+        req.system_prompt = _append_protocol_contract(req.system_prompt)
         await self._log_raw_event(
             stage="chat_request_after_injection",
             payload=self._request_log_payload(
@@ -448,6 +478,18 @@ class MnemosyneService:
                 "tools_call_name": getattr(resp, "tools_call_name", []),
                 "tools_call_args": getattr(resp, "tools_call_args", []),
                 "tools_call_ids": getattr(resp, "tools_call_ids", []),
+                "has_mnemosyne_meta_completion_text": has_mnemosyne_meta(raw_text),
+                "has_mnemosyne_meta_result_chain_plain_text": has_mnemosyne_meta(
+                    resp.result_chain.get_plain_text()
+                    if getattr(resp, "result_chain", None)
+                    else ""
+                ),
+                "has_mnemosyne_meta_raw_completion": has_mnemosyne_meta(
+                    json.dumps(
+                        _to_jsonable(getattr(resp, "raw_completion", None)),
+                        ensure_ascii=False,
+                    )
+                ),
                 "hidden_block_hits_completion_text": _extract_hidden_block_hits(
                     raw_text, specs
                 ),
@@ -468,10 +510,16 @@ class MnemosyneService:
         )
 
         try:
-            parsed = parse_hidden_blocks(raw_text, specs)
+            parsed = parse_mnemosyne_response(raw_text, specs)
         except Exception as exc:
             logger.warning("mnemosyne hidden block parsing failed: %s", exc)
             return
+
+        if not parsed.meta_present:
+            logger.warning(
+                "mnemosyne response missing <mnemosyne_meta> wrapper for session %s",
+                event.unified_msg_origin,
+            )
 
         resp.completion_text = parsed.visible_text
         event.set_extra(
@@ -482,6 +530,7 @@ class MnemosyneService:
                 "blocks": _serialize_blocks(parsed.blocks),
                 "provider_id": event.get_extra(EXTRA_PROVIDER_ID, ""),
                 "parsed_blocks": parsed.blocks,
+                "meta_present": parsed.meta_present,
             },
         )
 
@@ -723,6 +772,7 @@ class MnemosyneService:
             str(background_cfg.get("journal_template", "") or ""),
             prompt_context,
         )
+        journal_prompt = _append_protocol_contract(journal_prompt)
         if not journal_prompt.strip():
             return
         await self._log_raw_event(
@@ -748,6 +798,9 @@ class MnemosyneService:
                 "persona_id": persona_id,
                 "provider_id": provider_id,
                 "completion_text": response.completion_text or "",
+                "has_mnemosyne_meta_completion_text": has_mnemosyne_meta(
+                    response.completion_text or ""
+                ),
                 "result_chain": _to_jsonable(
                     getattr(getattr(response, "result_chain", None), "chain", None)
                 ),
@@ -756,10 +809,15 @@ class MnemosyneService:
                 ),
             },
         )
-        parsed = parse_hidden_blocks(
+        parsed = parse_mnemosyne_response(
             response.completion_text or "",
             prompts.get("hidden_blocks", []),
         )
+        if not parsed.meta_present:
+            logger.warning(
+                "mnemosyne background journal missing <mnemosyne_meta> wrapper for session %s",
+                session["session_key"],
+            )
         bg_turn_id = await self.storage.insert_turn(
             session_key=session["session_key"],
             role="assistant",
@@ -794,6 +852,7 @@ class MnemosyneService:
             str(background_cfg.get("active_push_template", "") or ""),
             prompt_context,
         )
+        push_prompt = _append_protocol_contract(push_prompt)
         if not push_prompt.strip():
             return
         await self._log_raw_event(
@@ -819,6 +878,9 @@ class MnemosyneService:
                 "persona_id": persona_id,
                 "provider_id": provider_id,
                 "completion_text": push_resp.completion_text or "",
+                "has_mnemosyne_meta_completion_text": has_mnemosyne_meta(
+                    push_resp.completion_text or ""
+                ),
                 "result_chain": _to_jsonable(
                     getattr(getattr(push_resp, "result_chain", None), "chain", None)
                 ),
@@ -827,10 +889,15 @@ class MnemosyneService:
                 ),
             },
         )
-        parsed_push = parse_hidden_blocks(
+        parsed_push = parse_mnemosyne_response(
             push_resp.completion_text or "",
             prompts.get("hidden_blocks", []),
         )
+        if not parsed_push.meta_present:
+            logger.warning(
+                "mnemosyne proactive push missing <mnemosyne_meta> wrapper for session %s",
+                session["session_key"],
+            )
         visible_text = parsed_push.visible_text.strip()
         if not visible_text:
             logger.warning("mnemosyne scheduler skipped empty proactive visible text")
