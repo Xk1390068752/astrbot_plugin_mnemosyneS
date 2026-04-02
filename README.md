@@ -9,7 +9,7 @@
 - 在空闲时后台生成角色动态轨迹
 - 按概率主动向最近私聊用户发起消息
 - 通过隐藏标签从模型回复中提取结构化内容，并在发给用户前剥离
-- 把发送给 LLM 的请求和收到的响应记录为 `jsonl` 调试日志
+- 把发送给 LLM 的最终完整提示词和模型原始回包记录为 `jsonl` 调试日志
 - 采用强制性的 `<mnemosyne_meta>...</mnemosyne_meta>` 隐藏协议包装记忆更新
 
 ## 目录说明
@@ -36,15 +36,14 @@
 ## 调试日志
 
 `raw_llm.jsonl` 当前会记录这些阶段：
-- `chat_request_entry`: 请求刚进入插件链时的快照，尽量接近“其他插件处理前”
-- `chat_request_before_injection`: Mnemosyne 注入前的请求快照
-- `chat_request_after_injection`: Mnemosyne 注入后的请求快照
-- `chat_response_raw`: AstrBot 暴露给插件的响应文本、消息链和 provider 原始响应对象
+- `chat_request_final`: 真正发给 LLM 的最终完整提示词文本
+- `chat_response_raw`: 模型原始回包文本
+- `background_journal_request`: 后台日记生成的最终完整提示词文本
+- `background_journal_response_raw`: 后台日记生成的原始回包文本
+- `background_push_request`: 主动私聊生成的最终完整提示词文本
+- `background_push_response_raw`: 主动私聊生成的原始回包文本
 
-其中：
-- `request_phase` 用来标记当前记录所处的阶段
-- `hook_priority` 用来标记触发该记录的 hook 优先级
-- `hidden_block_hits_*` 会告诉你隐藏标签到底出现在了哪一层
+每条日志现在只保留排查最有用的几项，不再输出大量中间结构。
 
 ## 提示词约定
 

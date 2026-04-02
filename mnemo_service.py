@@ -22,13 +22,10 @@ try:
         EXTRA_PENDING_ASSISTANT,
         EXTRA_PROVIDER_ID,
         EXTRA_USER_TURN_ID,
-        LLM_REQUEST_INJECTION_PRIORITY,
-        LLM_REQUEST_OBSERVER_PRIORITY,
         PLUGIN_NAME,
         SOURCE_BACKGROUND,
         SOURCE_CHAT,
         SOURCE_PUSH,
-        USER_SCOPE,
     )
     from .mnemo_parser import HiddenBlock, has_mnemosyne_meta, parse_mnemosyne_response
     from .mnemo_paths import get_default_prompts_template_path, resolve_user_path
@@ -47,13 +44,10 @@ except ImportError:
         EXTRA_PENDING_ASSISTANT,
         EXTRA_PROVIDER_ID,
         EXTRA_USER_TURN_ID,
-        LLM_REQUEST_INJECTION_PRIORITY,
-        LLM_REQUEST_OBSERVER_PRIORITY,
         PLUGIN_NAME,
         SOURCE_BACKGROUND,
         SOURCE_CHAT,
         SOURCE_PUSH,
-        USER_SCOPE,
     )
     from mnemo_parser import HiddenBlock, has_mnemosyne_meta, parse_mnemosyne_response
     from mnemo_paths import get_default_prompts_template_path, resolve_user_path
@@ -113,6 +107,140 @@ def _outline_journals(journals: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _message_content_to_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                item_type = str(item.get("type", "") or "")
+                if item_type == "text":
+                    parts.append(str(item.get("text", "") or ""))
+                elif item_type == "image_url":
+                    image_url = item.get("image_url", {})
+                    if isinstance(image_url, dict):
+                        parts.append(f"[image] {image_url.get('url', '')}")
+                    else:
+                        parts.append(f"[image] {image_url}")
+                else:
+                    parts.append(json.dumps(_to_jsonable(item), ensure_ascii=False))
+            else:
+                parts.append(str(item))
+        return "\n".join(part for part in parts if part)
+    if isinstance(content, dict):
+        return json.dumps(_to_jsonable(content), ensure_ascii=False, indent=2)
+    return str(content)
+
+
+def _flatten_contexts_text(contexts: Any) -> str:
+    if not contexts:
+        return ""
+    lines: list[str] = []
+    for index, item in enumerate(contexts, start=1):
+        role = "unknown"
+        content = item
+        if isinstance(item, dict):
+            role = str(item.get("role", "unknown"))
+            content = item.get("content")
+        else:
+            role = getattr(item, "role", "unknown")
+            content = getattr(item, "content", item)
+        text = _message_content_to_text(content).strip()
+        if not text:
+            continue
+        lines.append(f"[Context {index} | {role}]\n{text}")
+    return "\n\n".join(lines)
+
+
+def _flatten_extra_parts_text(extra_parts: Any) -> str:
+    if not extra_parts:
+        return ""
+    lines: list[str] = []
+    for index, part in enumerate(extra_parts, start=1):
+        if hasattr(part, "text"):
+            lines.append(f"[Extra {index}]\n{getattr(part, 'text', '')}")
+        elif hasattr(part, "image_url"):
+            image_url = getattr(part, "image_url", None)
+            url = getattr(image_url, "url", image_url)
+            lines.append(f"[Extra {index}]\n[image] {url}")
+        elif isinstance(part, dict):
+            lines.append(f"[Extra {index}]\n{json.dumps(_to_jsonable(part), ensure_ascii=False, indent=2)}")
+        else:
+            lines.append(f"[Extra {index}]\n{part}")
+    return "\n\n".join(lines)
+
+
+def _build_final_prompt_text(req) -> str:
+    sections: list[str] = []
+    system_prompt = str(getattr(req, "system_prompt", "") or "").strip()
+    if system_prompt:
+        sections.append(f"[System Prompt]\n{system_prompt}")
+
+    contexts_text = _flatten_contexts_text(getattr(req, "contexts", []))
+    if contexts_text:
+        sections.append(contexts_text)
+
+    prompt = str(getattr(req, "prompt", "") or "").strip()
+    if prompt:
+        sections.append(f"[Prompt]\n{prompt}")
+
+    extra_text = _flatten_extra_parts_text(getattr(req, "extra_user_content_parts", []))
+    if extra_text:
+        sections.append(extra_text)
+
+    image_urls = getattr(req, "image_urls", []) or []
+    if image_urls:
+        sections.append("[Image URLs]\n" + "\n".join(str(url) for url in image_urls))
+
+    return "\n\n".join(section for section in sections if section).strip()
+
+
+def _collect_text_fragments(value: Any, results: list[str]) -> None:
+    if value is None:
+        return
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            results.append(text)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {"text", "content"} and isinstance(item, str):
+                text = item.strip()
+                if text:
+                    results.append(text)
+                    continue
+            _collect_text_fragments(item, results)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _collect_text_fragments(item, results)
+
+
+def _extract_response_text(resp) -> str:
+    raw_completion = _to_jsonable(getattr(resp, "raw_completion", None))
+    parts: list[str] = []
+    _collect_text_fragments(raw_completion, parts)
+    merged = "\n".join(part for part in parts if part).strip()
+    if merged:
+        return merged
+    completion_text = str(getattr(resp, "completion_text", "") or "").strip()
+    if completion_text:
+        return completion_text
+    result_chain = getattr(resp, "result_chain", None)
+    if result_chain:
+        try:
+            plain = result_chain.get_plain_text().strip()
+            if plain:
+                return plain
+        except Exception:
+            pass
+    return ""
+
+
 def _serialize_blocks(blocks: list[HiddenBlock]) -> dict[str, Any]:
     payload: dict[str, list[dict[str, Any]]] = {}
     for block in blocks:
@@ -124,6 +252,16 @@ def _serialize_blocks(blocks: list[HiddenBlock]) -> dict[str, Any]:
             }
         )
     return payload
+
+
+def _filter_character_blocks(blocks: list[HiddenBlock]) -> list[HiddenBlock]:
+    allowed_targets = {
+        "character_state_patch",
+        "character_emotion_patch",
+        "character_memory_append",
+        "journal_entry",
+    }
+    return [block for block in blocks if block.target in allowed_targets]
 
 
 def _extract_hidden_block_hits(text: str, specs: list[dict[str, Any]]) -> list[str]:
@@ -150,10 +288,7 @@ def _mnemosyne_protocol_contract() -> str:
         "Inside <mnemosyne_meta>, include any needed hidden blocks such as:\n"
         "<character_state_patch>{...}</character_state_patch>\n"
         "<character_emotion_patch>{...}</character_emotion_patch>\n"
-        "<user_state_patch>{...}</user_state_patch>\n"
-        "<user_emotion_patch>{...}</user_emotion_patch>\n"
         "<character_memory_append>[...]</character_memory_append>\n"
-        "<user_memory_append>[...]</user_memory_append>\n"
         "<journal_entry>...</journal_entry>\n"
         "If nothing changed, you must still output an empty wrapper exactly as:\n"
         "<mnemosyne_meta></mnemosyne_meta>\n"
@@ -285,15 +420,9 @@ class MnemosyneService:
         character_state = await self.storage.get_state(
             CHARACTER_SCOPE, CHARACTER_SCOPE_KEY
         )
-        user_state = await self.storage.get_state(USER_SCOPE, session_key)
         character_memories = await self.storage.list_recent_memories(
             CHARACTER_SCOPE,
             CHARACTER_SCOPE_KEY,
-            self._memory_limit(),
-        )
-        user_memories = await self.storage.list_recent_memories(
-            USER_SCOPE,
-            session_key,
             self._memory_limit(),
         )
         recent_journals = await self.storage.list_recent_journals(self._journal_limit())
@@ -303,10 +432,10 @@ class MnemosyneService:
             "current_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             "character_state_json": _safe_json(character_state["state"]),
             "character_emotion_json": _safe_json(character_state["emotion"]),
-            "user_state_json": _safe_json(user_state["state"]),
-            "user_emotion_json": _safe_json(user_state["emotion"]),
+            "user_state_json": "{}",
+            "user_emotion_json": "{}",
             "character_memories_text": _outline_memories(character_memories),
-            "user_memories_text": _outline_memories(user_memories),
+            "user_memories_text": "(disabled)",
             "recent_journals_text": _outline_journals(recent_journals),
             "latest_journal_text": recent_journals[0]["content"] if recent_journals else "",
         }
@@ -328,33 +457,6 @@ class MnemosyneService:
             return
         await self.raw_logger.append(stage=stage, payload=payload)
 
-    def _request_log_payload(
-        self,
-        *,
-        event,
-        req,
-        persona_id: str,
-        provider_id: str,
-        hook_priority: int,
-        request_phase: str,
-        stage_aliases: list[str] | None = None,
-    ) -> dict[str, Any]:
-        return {
-            "session_key": event.unified_msg_origin,
-            "persona_id": persona_id,
-            "provider_id": provider_id,
-            "hook_priority": hook_priority,
-            "request_phase": request_phase,
-            "stage_aliases": stage_aliases or [],
-            "prompt": req.prompt,
-            "system_prompt": req.system_prompt,
-            "contexts": _to_jsonable(getattr(req, "contexts", [])),
-            "image_urls": _to_jsonable(getattr(req, "image_urls", [])),
-            "extra_user_content_parts": _to_jsonable(
-                getattr(req, "extra_user_content_parts", [])
-            ),
-        }
-
     async def observe_llm_request(self, event, req) -> None:
         matched = await self._match_target_persona(
             event,
@@ -362,20 +464,6 @@ class MnemosyneService:
         )
         if not matched:
             return
-
-        provider_id = await self._resolve_provider_id(event)
-        await self._log_raw_event(
-            stage="chat_request_entry",
-            payload=self._request_log_payload(
-                event=event,
-                req=req,
-                persona_id=matched["persona_id"],
-                provider_id=provider_id,
-                hook_priority=LLM_REQUEST_OBSERVER_PRIORITY,
-                request_phase="entry_before_most_plugins",
-                stage_aliases=[],
-            ),
-        )
 
     async def on_llm_request(self, event, req) -> None:
         matched = await self._match_target_persona(
@@ -392,18 +480,6 @@ class MnemosyneService:
         provider_id = await self._resolve_provider_id(event)
         event.set_extra(EXTRA_PROVIDER_ID, provider_id)
         await self._ensure_session(event, matched["persona_id"], provider_id)
-        await self._log_raw_event(
-            stage="chat_request_before_injection",
-            payload=self._request_log_payload(
-                event=event,
-                req=req,
-                persona_id=matched["persona_id"],
-                provider_id=provider_id,
-                hook_priority=LLM_REQUEST_INJECTION_PRIORITY,
-                request_phase="before_mnemosyne_injection",
-                stage_aliases=["chat_request_final_before_patch"],
-            ),
-        )
 
         prompts = self.prompt_store.load()
         chat_cfg = prompts.get("chat", {})
@@ -420,16 +496,13 @@ class MnemosyneService:
             req.system_prompt = rendered_prompt
         req.system_prompt = _append_protocol_contract(req.system_prompt)
         await self._log_raw_event(
-            stage="chat_request_after_injection",
-            payload=self._request_log_payload(
-                event=event,
-                req=req,
-                persona_id=matched["persona_id"],
-                provider_id=provider_id,
-                hook_priority=LLM_REQUEST_INJECTION_PRIORITY,
-                request_phase="after_mnemosyne_injection",
-                stage_aliases=["chat_request_final"],
-            ),
+            stage="chat_request_final",
+            payload={
+                "session_key": event.unified_msg_origin,
+                "persona_id": matched["persona_id"],
+                "provider_id": provider_id,
+                "final_prompt_text": _build_final_prompt_text(req),
+            },
         )
 
         if event.get_extra(EXTRA_USER_TURN_ID):
@@ -460,52 +533,16 @@ class MnemosyneService:
         prompts = self.prompt_store.load()
         specs = prompts.get("hidden_blocks", [])
         raw_text = resp.completion_text or ""
+        raw_response_text = _extract_response_text(resp)
         await self._log_raw_event(
             stage="chat_response_raw",
             payload={
                 "session_key": event.unified_msg_origin,
                 "persona_id": event.get_extra(EXTRA_MATCHED_PERSONA, ""),
                 "provider_id": event.get_extra(EXTRA_PROVIDER_ID, ""),
-                "completion_text": raw_text,
-                "result_chain_plain_text": resp.result_chain.get_plain_text()
-                if getattr(resp, "result_chain", None)
-                else None,
-                "result_chain": _to_jsonable(
-                    getattr(getattr(resp, "result_chain", None), "chain", None)
-                ),
-                "raw_completion": _to_jsonable(getattr(resp, "raw_completion", None)),
-                "reasoning_content": getattr(resp, "reasoning_content", ""),
-                "tools_call_name": getattr(resp, "tools_call_name", []),
-                "tools_call_args": getattr(resp, "tools_call_args", []),
-                "tools_call_ids": getattr(resp, "tools_call_ids", []),
-                "has_mnemosyne_meta_completion_text": has_mnemosyne_meta(raw_text),
-                "has_mnemosyne_meta_result_chain_plain_text": has_mnemosyne_meta(
-                    resp.result_chain.get_plain_text()
-                    if getattr(resp, "result_chain", None)
-                    else ""
-                ),
-                "has_mnemosyne_meta_raw_completion": has_mnemosyne_meta(
-                    json.dumps(
-                        _to_jsonable(getattr(resp, "raw_completion", None)),
-                        ensure_ascii=False,
-                    )
-                ),
-                "hidden_block_hits_completion_text": _extract_hidden_block_hits(
-                    raw_text, specs
-                ),
-                "hidden_block_hits_result_chain_plain_text": _extract_hidden_block_hits(
-                    resp.result_chain.get_plain_text()
-                    if getattr(resp, "result_chain", None)
-                    else "",
-                    specs,
-                ),
-                "hidden_block_hits_raw_completion": _extract_hidden_block_hits(
-                    json.dumps(
-                        _to_jsonable(getattr(resp, "raw_completion", None)),
-                        ensure_ascii=False,
-                    ),
-                    specs,
-                ),
+                "raw_response_text": raw_response_text,
+                "mnemosyne_meta_present": has_mnemosyne_meta(raw_response_text),
+                "hidden_block_hits": _extract_hidden_block_hits(raw_response_text, specs),
             },
         )
 
@@ -514,6 +551,7 @@ class MnemosyneService:
         except Exception as exc:
             logger.warning("mnemosyne hidden block parsing failed: %s", exc)
             return
+        parsed.blocks = _filter_character_blocks(parsed.blocks)
 
         if not parsed.meta_present:
             logger.warning(
@@ -599,36 +637,11 @@ class MnemosyneService:
                     emotion_patch=payload,
                     source_turn_id=source_turn_id,
                 )
-            elif target == "user_state_patch" and isinstance(payload, dict):
-                await self.storage.merge_state(
-                    scope_type=USER_SCOPE,
-                    scope_key=session_key,
-                    state_patch=payload,
-                    source_turn_id=source_turn_id,
-                )
-            elif target == "user_emotion_patch" and isinstance(payload, dict):
-                await self.storage.merge_state(
-                    scope_type=USER_SCOPE,
-                    scope_key=session_key,
-                    emotion_patch=payload,
-                    source_turn_id=source_turn_id,
-                )
             elif target == "character_memory_append":
                 for item in self._normalize_memory_payload(payload):
                     await self.storage.add_memory(
                         scope_type=CHARACTER_SCOPE,
                         scope_key=CHARACTER_SCOPE_KEY,
-                        content=item["content"],
-                        memory_type=item["memory_type"],
-                        importance=item["importance"],
-                        metadata=item["metadata"],
-                        source_turn_id=source_turn_id,
-                    )
-            elif target == "user_memory_append":
-                for item in self._normalize_memory_payload(payload):
-                    await self.storage.add_memory(
-                        scope_type=USER_SCOPE,
-                        scope_key=session_key,
                         content=item["content"],
                         memory_type=item["memory_type"],
                         importance=item["importance"],
@@ -781,8 +794,7 @@ class MnemosyneService:
                 "session_key": session["session_key"],
                 "persona_id": persona_id,
                 "provider_id": provider_id,
-                "prompt": journal_prompt,
-                "system_prompt": persona_prompt,
+                "final_prompt_text": f"[System Prompt]\n{persona_prompt}\n\n[Prompt]\n{journal_prompt}".strip(),
             },
         )
 
@@ -797,15 +809,9 @@ class MnemosyneService:
                 "session_key": session["session_key"],
                 "persona_id": persona_id,
                 "provider_id": provider_id,
-                "completion_text": response.completion_text or "",
-                "has_mnemosyne_meta_completion_text": has_mnemosyne_meta(
-                    response.completion_text or ""
-                ),
-                "result_chain": _to_jsonable(
-                    getattr(getattr(response, "result_chain", None), "chain", None)
-                ),
-                "raw_completion": _to_jsonable(
-                    getattr(response, "raw_completion", None)
+                "raw_response_text": _extract_response_text(response),
+                "mnemosyne_meta_present": has_mnemosyne_meta(
+                    _extract_response_text(response)
                 ),
             },
         )
@@ -813,6 +819,7 @@ class MnemosyneService:
             response.completion_text or "",
             prompts.get("hidden_blocks", []),
         )
+        parsed.blocks = _filter_character_blocks(parsed.blocks)
         if not parsed.meta_present:
             logger.warning(
                 "mnemosyne background journal missing <mnemosyne_meta> wrapper for session %s",
@@ -861,8 +868,7 @@ class MnemosyneService:
                 "session_key": session["session_key"],
                 "persona_id": persona_id,
                 "provider_id": provider_id,
-                "prompt": push_prompt,
-                "system_prompt": persona_prompt,
+                "final_prompt_text": f"[System Prompt]\n{persona_prompt}\n\n[Prompt]\n{push_prompt}".strip(),
             },
         )
 
@@ -877,15 +883,9 @@ class MnemosyneService:
                 "session_key": session["session_key"],
                 "persona_id": persona_id,
                 "provider_id": provider_id,
-                "completion_text": push_resp.completion_text or "",
-                "has_mnemosyne_meta_completion_text": has_mnemosyne_meta(
-                    push_resp.completion_text or ""
-                ),
-                "result_chain": _to_jsonable(
-                    getattr(getattr(push_resp, "result_chain", None), "chain", None)
-                ),
-                "raw_completion": _to_jsonable(
-                    getattr(push_resp, "raw_completion", None)
+                "raw_response_text": _extract_response_text(push_resp),
+                "mnemosyne_meta_present": has_mnemosyne_meta(
+                    _extract_response_text(push_resp)
                 ),
             },
         )
@@ -893,6 +893,7 @@ class MnemosyneService:
             push_resp.completion_text or "",
             prompts.get("hidden_blocks", []),
         )
+        parsed_push.blocks = _filter_character_blocks(parsed_push.blocks)
         if not parsed_push.meta_present:
             logger.warning(
                 "mnemosyne proactive push missing <mnemosyne_meta> wrapper for session %s",
