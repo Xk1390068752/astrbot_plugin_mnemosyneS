@@ -56,6 +56,7 @@ def _cleanup_visible_text(text: str) -> str:
 
 
 def parse_hidden_blocks(text: str, specs: list[dict[str, Any]]) -> ParsedResponse:
+    # 按配置里的正则逐个提取隐藏块，并把匹配到的片段从可见文本里剥离。
     if not text:
         return ParsedResponse(visible_text="", blocks=[])
 
@@ -101,6 +102,8 @@ def has_mnemosyne_meta(text: str) -> bool:
 
 
 def parse_mnemosyne_response(text: str, specs: list[dict[str, Any]]) -> ParsedResponse:
+    # 优先要求模型使用统一的 <mnemosyne_meta> 外层包装。
+    # 如果没命中包装，则退回到旧版“裸标签”兼容模式。
     if not text:
         return ParsedResponse(visible_text="", blocks=[], meta_present=False)
 

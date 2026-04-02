@@ -54,6 +54,8 @@ class MnemoStorage:
             await asyncio.to_thread(self._initialize_sync)
 
     def _initialize_sync(self) -> None:
+        # SQLite 规模不大，这里用一份轻量 schema 同时承载：
+        # 会话、对话 turn、角色状态、记忆和日记。
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(
@@ -194,6 +196,8 @@ class MnemoStorage:
         assistant_message_at: float | None,
         push_message_at: float | None,
     ) -> None:
+        # session_key 是插件自己的线程键；
+        # 在命中 persona 时，通常会绑定到 AstrBot conversation_id。
         now = time.time()
         with self._connect() as conn:
             conn.execute(
@@ -274,6 +278,7 @@ class MnemoStorage:
         prompt_snapshot: dict[str, Any],
         sent_at: float | None,
     ) -> str:
+        # turn 表既承担“短期上下文回放”，也承担审计日志的角色。
         turn_id = uuid.uuid4().hex
         now = time.time()
         with self._connect() as conn:
@@ -360,6 +365,8 @@ class MnemoStorage:
         emotion_patch: dict[str, Any],
         source_turn_id: str,
     ) -> None:
+        # 状态更新采用 merge patch，而不是整表覆盖，
+        # 方便提示词只输出增量字段。
         with self._connect() as conn:
             row = conn.execute(
                 """

@@ -176,6 +176,7 @@ def _flatten_extra_parts_text(extra_parts: Any) -> str:
 
 
 def _build_final_prompt_text(req) -> str:
+    # 将请求的各个组成部分串成一段完整文本，便于直接落日志排查。
     sections: list[str] = []
     system_prompt = str(getattr(req, "system_prompt", "") or "").strip()
     if system_prompt:
@@ -201,6 +202,8 @@ def _build_final_prompt_text(req) -> str:
 
 
 def _conversation_context_session_key(req, event) -> str:
+    # 插件自己的短期上下文优先绑定到 AstrBot 的 conversation_id，
+    # 这样 /new、/del 造成的会话切换也会同步反映到插件上下文。
     conversation = getattr(req, "conversation", None)
     if conversation:
         cid = getattr(conversation, "cid", None) or getattr(
@@ -212,12 +215,15 @@ def _conversation_context_session_key(req, event) -> str:
 
 
 def _turns_to_contexts(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # 一旦命中目标人格，就由插件自己的 mnemo_turn 重建历史上下文。
+    # user 保留原文；assistant 只回放用户可见的 visible_text，避免隐藏标签再次污染上下文。
     contexts: list[dict[str, Any]] = []
     for turn in reversed(turns):
         role = str(turn.get("role", "") or "").strip()
         if role not in {"user", "assistant"}:
             continue
-        text = str(turn.get("raw_text", "") or "").strip()
+        text_key = "visible_text" if role == "assistant" else "raw_text"
+        text = str(turn.get(text_key, "") or "").strip()
         if not text:
             continue
         contexts.append({"role": role, "content": text})
@@ -247,6 +253,8 @@ def _collect_text_fragments(value: Any, results: list[str]) -> None:
 
 
 def _extract_response_text(resp) -> str:
+    # 日志优先尝试从 provider 原始回包里提取文本，
+    # 提取不到时再退回到 AstrBot 暴露给插件的 completion_text。
     raw_completion = _to_jsonable(getattr(resp, "raw_completion", None))
     parts: list[str] = []
     _collect_text_fragments(raw_completion, parts)
@@ -268,6 +276,7 @@ def _extract_response_text(resp) -> str:
 
 
 def _serialize_blocks(blocks: list[HiddenBlock]) -> dict[str, Any]:
+    # 隐藏块统一按名称归档，便于后续写入 turn 的 hidden_payload_json。
     payload: dict[str, list[dict[str, Any]]] = {}
     for block in blocks:
         payload.setdefault(block.name, []).append(
@@ -281,6 +290,7 @@ def _serialize_blocks(blocks: list[HiddenBlock]) -> dict[str, Any]:
 
 
 def _filter_character_blocks(blocks: list[HiddenBlock]) -> list[HiddenBlock]:
+    # 当前版本只允许角色侧的数据真正进入状态机和存储层。
     allowed_targets = {
         "character_state_patch",
         "character_emotion_patch",
@@ -306,6 +316,7 @@ def _extract_hidden_block_hits(text: str, specs: list[dict[str, Any]]) -> list[s
 
 
 def _mnemosyne_protocol_contract() -> str:
+    # 这是一层硬协议兜底，用来提醒模型必须输出统一的 Mnemosyne 包装结构。
     return (
         "Mnemosyne output protocol is mandatory.\n"
         "After the visible reply, you MUST output exactly one outer wrapper:\n"
@@ -446,6 +457,8 @@ class MnemosyneService:
     async def _build_prompt_context(
         self, session_key: str, persona_id: str
     ) -> dict[str, Any]:
+        # 注入给模型的是“角色当前快照 + 最近窗口”，不是全量历史。
+        # 这样既能保留连续性，也能避免提示词无限膨胀。
         character_state = await self.storage.get_state(
             CHARACTER_SCOPE, CHARACTER_SCOPE_KEY
         )
@@ -470,6 +483,7 @@ class MnemosyneService:
         }
 
     async def _ensure_session(self, event, persona_id: str, provider_id: str) -> None:
+        # 会话表记录的是插件自己的线程视角，而不是 AstrBot 默认上下文的副本。
         session_key = event.get_extra(EXTRA_SESSION_KEY) or event.unified_msg_origin
         await self.storage.upsert_session(
             session_key=session_key,
@@ -520,6 +534,7 @@ class MnemosyneService:
         )
         prompt_context["astrbot_system_prompt"] = req.system_prompt or ""
 
+        # 命中目标人格后，完全改用插件自己的 turn 历史接管短期上下文。
         req.contexts = _turns_to_contexts(
             await self.storage.list_recent_turns(
                 session_key,
@@ -533,6 +548,7 @@ class MnemosyneService:
             req.system_prompt = f"{req.system_prompt or ''}\n\n{rendered_prompt}".strip()
         else:
             req.system_prompt = rendered_prompt
+        # 最后再追加一层硬协议，降低提示词写漏时的行为漂移。
         req.system_prompt = _append_protocol_contract(req.system_prompt)
         await self._log_raw_event(
             stage="chat_request_final",
@@ -572,6 +588,7 @@ class MnemosyneService:
 
         prompts = self.prompt_store.load()
         specs = prompts.get("hidden_blocks", [])
+        # 实际解析与入库仍以 AstrBot 当前回传给插件的 completion_text 为准。
         raw_text = resp.completion_text or ""
         raw_response_text = _extract_response_text(resp)
         await self._log_raw_event(
@@ -591,6 +608,7 @@ class MnemosyneService:
         except Exception as exc:
             logger.warning("mnemosyne hidden block parsing failed: %s", exc)
             return
+        # 解析完之后再做一次角色侧白名单过滤，避免无关隐藏块混入存储。
         parsed.blocks = _filter_character_blocks(parsed.blocks)
 
         if not parsed.meta_present:
@@ -613,6 +631,7 @@ class MnemosyneService:
         )
 
     async def after_message_sent(self, event) -> None:
+        # assistant turn 必须等平台实际发出成功后再补录，避免出现“写库成功但消息没发出去”的假记录。
         payload = event.get_extra(EXTRA_PENDING_ASSISTANT)
         if not payload:
             return
@@ -654,6 +673,8 @@ class MnemosyneService:
         source_turn_id: str,
         idle_since: float | None,
     ) -> dict[str, Any]:
+        # 这里负责把模型输出的隐藏块真正沉淀为数据库状态：
+        # state/emotion 做 merge，memory 做 append，journal 独立写入。
         journal_text = ""
         character_state_patch: dict[str, Any] = {}
         character_emotion_patch: dict[str, Any] = {}
@@ -710,6 +731,7 @@ class MnemosyneService:
         }
 
     def _normalize_memory_payload(self, payload: Any) -> list[dict[str, Any]]:
+        # memory_append 允许字符串、对象或对象数组，这里统一收敛成固定结构。
         if isinstance(payload, str):
             return [
                 {
@@ -784,6 +806,7 @@ class MnemosyneService:
             self._background_running = False
 
     async def _scheduler_tick_impl(self) -> None:
+        # 后台生成只跟随最近一个命中过目标人格的会话继续推进幕后轨迹。
         session = await self.storage.get_latest_session()
         if not session:
             return
