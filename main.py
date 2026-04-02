@@ -7,6 +7,8 @@ from astrbot.api.star import Context, Star, register
 
 try:
     from .mnemo_constants import (
+        LLM_REQUEST_INJECTION_PRIORITY,
+        LLM_REQUEST_OBSERVER_PRIORITY,
         PLUGIN_AUTHOR,
         PLUGIN_NAME,
         PLUGIN_REPO,
@@ -15,7 +17,14 @@ try:
     from .mnemo_scheduler import BackgroundScheduler
     from .mnemo_service import MnemosyneService
 except ImportError:
-    from mnemo_constants import PLUGIN_AUTHOR, PLUGIN_NAME, PLUGIN_REPO, PLUGIN_VERSION
+    from mnemo_constants import (
+        LLM_REQUEST_INJECTION_PRIORITY,
+        LLM_REQUEST_OBSERVER_PRIORITY,
+        PLUGIN_AUTHOR,
+        PLUGIN_NAME,
+        PLUGIN_REPO,
+        PLUGIN_VERSION,
+    )
     from mnemo_scheduler import BackgroundScheduler
     from mnemo_service import MnemosyneService
 
@@ -39,7 +48,13 @@ class MnemosynePlugin(Star):
         self.scheduler.start()
         logger.info("%s loaded.", PLUGIN_NAME)
 
-    @filter.on_llm_request(priority=-1000)
+    @filter.on_llm_request(priority=LLM_REQUEST_OBSERVER_PRIORITY)
+    async def observe_llm_request(
+        self, event: AstrMessageEvent, req: ProviderRequest
+    ) -> None:
+        await self.service.observe_llm_request(event, req)
+
+    @filter.on_llm_request(priority=LLM_REQUEST_INJECTION_PRIORITY)
     async def on_llm_request(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:

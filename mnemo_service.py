@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import time
 from typing import Any
 
@@ -21,6 +22,8 @@ try:
         EXTRA_PENDING_ASSISTANT,
         EXTRA_PROVIDER_ID,
         EXTRA_USER_TURN_ID,
+        LLM_REQUEST_INJECTION_PRIORITY,
+        LLM_REQUEST_OBSERVER_PRIORITY,
         PLUGIN_NAME,
         SOURCE_BACKGROUND,
         SOURCE_CHAT,
@@ -44,6 +47,8 @@ except ImportError:
         EXTRA_PENDING_ASSISTANT,
         EXTRA_PROVIDER_ID,
         EXTRA_USER_TURN_ID,
+        LLM_REQUEST_INJECTION_PRIORITY,
+        LLM_REQUEST_OBSERVER_PRIORITY,
         PLUGIN_NAME,
         SOURCE_BACKGROUND,
         SOURCE_CHAT,
@@ -119,6 +124,21 @@ def _serialize_blocks(blocks: list[HiddenBlock]) -> dict[str, Any]:
             }
         )
     return payload
+
+
+def _extract_hidden_block_hits(text: str, specs: list[dict[str, Any]]) -> list[str]:
+    hits: list[str] = []
+    for spec in specs:
+        pattern = str(spec.get("pattern", "") or "")
+        name = str(spec.get("name", "") or spec.get("target", "") or "")
+        if not pattern or not name:
+            continue
+        try:
+            if re.search(pattern, text):
+                hits.append(name)
+        except re.error:
+            continue
+    return hits
 
 
 class MnemosyneService:
@@ -279,6 +299,55 @@ class MnemosyneService:
             return
         await self.raw_logger.append(stage=stage, payload=payload)
 
+    def _request_log_payload(
+        self,
+        *,
+        event,
+        req,
+        persona_id: str,
+        provider_id: str,
+        hook_priority: int,
+        request_phase: str,
+        stage_aliases: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "session_key": event.unified_msg_origin,
+            "persona_id": persona_id,
+            "provider_id": provider_id,
+            "hook_priority": hook_priority,
+            "request_phase": request_phase,
+            "stage_aliases": stage_aliases or [],
+            "prompt": req.prompt,
+            "system_prompt": req.system_prompt,
+            "contexts": _to_jsonable(getattr(req, "contexts", [])),
+            "image_urls": _to_jsonable(getattr(req, "image_urls", [])),
+            "extra_user_content_parts": _to_jsonable(
+                getattr(req, "extra_user_content_parts", [])
+            ),
+        }
+
+    async def observe_llm_request(self, event, req) -> None:
+        matched = await self._match_target_persona(
+            event,
+            req.conversation.persona_id if getattr(req, "conversation", None) else None,
+        )
+        if not matched:
+            return
+
+        provider_id = await self._resolve_provider_id(event)
+        await self._log_raw_event(
+            stage="chat_request_entry",
+            payload=self._request_log_payload(
+                event=event,
+                req=req,
+                persona_id=matched["persona_id"],
+                provider_id=provider_id,
+                hook_priority=LLM_REQUEST_OBSERVER_PRIORITY,
+                request_phase="entry_before_most_plugins",
+                stage_aliases=[],
+            ),
+        )
+
     async def on_llm_request(self, event, req) -> None:
         matched = await self._match_target_persona(
             event,
@@ -296,18 +365,15 @@ class MnemosyneService:
         await self._ensure_session(event, matched["persona_id"], provider_id)
         await self._log_raw_event(
             stage="chat_request_before_injection",
-            payload={
-                "session_key": event.unified_msg_origin,
-                "persona_id": matched["persona_id"],
-                "provider_id": provider_id,
-                "prompt": req.prompt,
-                "system_prompt": req.system_prompt,
-                "contexts": req.contexts,
-                "image_urls": getattr(req, "image_urls", []),
-                "extra_user_content_parts": _to_jsonable(
-                    getattr(req, "extra_user_content_parts", [])
-                ),
-            },
+            payload=self._request_log_payload(
+                event=event,
+                req=req,
+                persona_id=matched["persona_id"],
+                provider_id=provider_id,
+                hook_priority=LLM_REQUEST_INJECTION_PRIORITY,
+                request_phase="before_mnemosyne_injection",
+                stage_aliases=["chat_request_final_before_patch"],
+            ),
         )
 
         prompts = self.prompt_store.load()
@@ -324,19 +390,16 @@ class MnemosyneService:
         else:
             req.system_prompt = rendered_prompt
         await self._log_raw_event(
-            stage="chat_request_final",
-            payload={
-                "session_key": event.unified_msg_origin,
-                "persona_id": matched["persona_id"],
-                "provider_id": provider_id,
-                "prompt": req.prompt,
-                "system_prompt": req.system_prompt,
-                "contexts": req.contexts,
-                "image_urls": getattr(req, "image_urls", []),
-                "extra_user_content_parts": _to_jsonable(
-                    getattr(req, "extra_user_content_parts", [])
-                ),
-            },
+            stage="chat_request_after_injection",
+            payload=self._request_log_payload(
+                event=event,
+                req=req,
+                persona_id=matched["persona_id"],
+                provider_id=provider_id,
+                hook_priority=LLM_REQUEST_INJECTION_PRIORITY,
+                request_phase="after_mnemosyne_injection",
+                stage_aliases=["chat_request_final"],
+            ),
         )
 
         if event.get_extra(EXTRA_USER_TURN_ID):
@@ -385,6 +448,22 @@ class MnemosyneService:
                 "tools_call_name": getattr(resp, "tools_call_name", []),
                 "tools_call_args": getattr(resp, "tools_call_args", []),
                 "tools_call_ids": getattr(resp, "tools_call_ids", []),
+                "hidden_block_hits_completion_text": _extract_hidden_block_hits(
+                    raw_text, specs
+                ),
+                "hidden_block_hits_result_chain_plain_text": _extract_hidden_block_hits(
+                    resp.result_chain.get_plain_text()
+                    if getattr(resp, "result_chain", None)
+                    else "",
+                    specs,
+                ),
+                "hidden_block_hits_raw_completion": _extract_hidden_block_hits(
+                    json.dumps(
+                        _to_jsonable(getattr(resp, "raw_completion", None)),
+                        ensure_ascii=False,
+                    ),
+                    specs,
+                ),
             },
         )
 
