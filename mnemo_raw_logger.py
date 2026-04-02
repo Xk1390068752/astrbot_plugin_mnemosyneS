@@ -13,6 +13,7 @@ class RawLLMLogger:
         self._lock = asyncio.Lock()
 
     async def append(self, *, stage: str, payload: dict[str, Any]) -> None:
+        # 使用 jsonl 追加写入，方便后面直接按时间顺序 grep / tail / 导入分析。
         record = {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             "stage": stage,

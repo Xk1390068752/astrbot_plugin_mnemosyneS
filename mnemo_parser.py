@@ -8,6 +8,7 @@ from typing import Any
 
 @dataclass
 class HiddenBlock:
+    # name 对应 hidden_blocks 里的配置名，target 对应真正的业务处理目标。
     name: str
     target: str
     raw: str
@@ -16,6 +17,7 @@ class HiddenBlock:
 
 @dataclass
 class ParsedResponse:
+    # visible_text 是最终发给用户的正文，blocks 是从正文里剥离出来的隐藏块。
     visible_text: str
     blocks: list[HiddenBlock]
     meta_present: bool = False

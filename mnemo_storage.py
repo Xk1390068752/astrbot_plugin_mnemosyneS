@@ -28,6 +28,7 @@ def _json_loads(value: str | None, default: Any) -> Any:
 
 
 def _merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    # 递归合并字典，用于把模型输出的 patch 叠到已有状态快照上。
     merged = dict(base)
     for key, value in patch.items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
@@ -43,6 +44,7 @@ class MnemoStorage:
         self._lock = asyncio.Lock()
 
     def _connect(self) -> sqlite3.Connection:
+        # 这里保持最朴素的 sqlite3 连接，靠 asyncio.to_thread 避免阻塞事件循环。
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=DELETE;")
@@ -50,6 +52,7 @@ class MnemoStorage:
         return conn
 
     async def initialize(self) -> None:
+        # 所有数据库操作都串行经过同一把锁，避免并发写导致状态相互覆盖。
         async with self._lock:
             await asyncio.to_thread(self._initialize_sync)
 
@@ -311,6 +314,7 @@ class MnemoStorage:
             return await asyncio.to_thread(self._get_state_sync, scope_type, scope_key)
 
     def _get_state_sync(self, scope_type: str, scope_key: str) -> dict[str, Any]:
+        # 没有状态时返回空快照，避免上层到处判空。
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -473,6 +477,7 @@ class MnemoStorage:
     def _list_recent_memories_sync(
         self, scope_type: str, scope_key: str, limit: int
     ) -> list[dict[str, Any]]:
+        # 记忆默认按创建时间倒序取最近窗口，交给提示词层自己决定如何使用。
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -519,6 +524,7 @@ class MnemoStorage:
         limit: int,
         include_source_types: tuple[str, ...],
     ) -> list[dict[str, Any]]:
+        # 这里返回的是“用于重建短期上下文”的原始 turn 记录。
         placeholders = ",".join("?" for _ in include_source_types)
         query = f"""
             SELECT turn_id, session_key, role, source_type, visible_text, raw_text,
@@ -581,6 +587,7 @@ class MnemoStorage:
         push_roll: float | None,
         push_sent_at: float | None,
     ) -> str:
+        # journal 代表角色在对话间隙沉淀下来的幕后轨迹，不等同于聊天 turn。
         journal_id = uuid.uuid4().hex
         now = time.time()
         with self._connect() as conn:
@@ -642,6 +649,7 @@ class MnemoStorage:
             return await asyncio.to_thread(self._get_latest_session_sync)
 
     def _get_latest_session_sync(self) -> dict[str, Any] | None:
+        # 后台调度默认跟随最近活跃的那个会话推进。
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -658,6 +666,7 @@ class MnemoStorage:
             return await asyncio.to_thread(self._get_stats_sync)
 
     def _get_stats_sync(self) -> dict[str, Any]:
+        # 状态命令只关心几个最小统计值，不在这里做复杂聚合。
         with self._connect() as conn:
             session_count = conn.execute(
                 "SELECT COUNT(*) AS cnt FROM mnemo_session"

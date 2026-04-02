@@ -365,6 +365,7 @@ class MnemosyneService:
         self.raw_logger = RawLLMLogger(self.raw_log_path)
 
     async def initialize(self) -> None:
+        # 准备 prompts.json 和 SQLite；如果文件不存在会自动创建。
         self.prompt_store.ensure_user_file()
         await self.storage.initialize()
 
@@ -416,6 +417,7 @@ class MnemosyneService:
         return cfg.get("provider_settings", {})
 
     async def _resolve_active_persona(self, event, conversation_persona_id: str | None):
+        # 这里复用 AstrBot 自己的人格解析链，避免插件私自猜当前人格。
         provider_settings = self._provider_settings(event)
         return await self.context.persona_manager.resolve_selected_persona(
             umo=event.unified_msg_origin,
@@ -425,6 +427,7 @@ class MnemosyneService:
         )
 
     async def _match_target_persona(self, event, conversation_persona_id: str | None):
+        # 只有命中目标人格时插件才会介入；否则整个插件链路保持完全静默。
         if not self.is_enabled():
             return None
         if self._private_only() and event.get_message_type() != MessageType.FRIEND_MESSAGE:
@@ -446,6 +449,7 @@ class MnemosyneService:
         }
 
     async def _resolve_provider_id(self, event) -> str:
+        # 优先用 AstrBot 当前会话绑定的 provider；拿不到时再退回旧接口。
         try:
             return await self.context.get_current_chat_provider_id(
                 umo=event.unified_msg_origin
@@ -497,11 +501,13 @@ class MnemosyneService:
         )
 
     async def _log_raw_event(self, *, stage: str, payload: dict[str, Any]) -> None:
+        # 原始日志是调试入口，不参与业务逻辑；关闭后不影响插件主功能。
         if not self._raw_logging_enabled():
             return
         await self.raw_logger.append(stage=stage, payload=payload)
 
     async def observe_llm_request(self, event, req) -> None:
+        # 当前版本这里只做人格命中探测，保留成单独 hook 主要是为了后续扩展。
         matched = await self._match_target_persona(
             event,
             req.conversation.persona_id if getattr(req, "conversation", None) else None,
@@ -794,6 +800,7 @@ class MnemosyneService:
         return self.build_status_lines(stats)
 
     async def scheduler_tick(self) -> None:
+        # service 层负责防重入；外部调度器只管定时触发。
         if not self.is_enabled() or not self._scheduler_enabled():
             return
         if self._background_running:
