@@ -11,8 +11,7 @@ PLACEHOLDER_RE = re.compile(r"{{\s*([a-zA-Z0-9_]+)\s*}}")
 
 
 def render_template(template: str, values: dict[str, Any]) -> str:
-    # 这里只做最轻量的占位符替换，不引入复杂模板引擎，
-    # 方便你直接维护 prompts.json。
+    # 这里只做最轻量的占位符替换，不引入复杂模板引擎，方便直接维护 prompts.json。
     def repl(match: re.Match[str]) -> str:
         key = match.group(1)
         value = values.get(key, "")
@@ -23,6 +22,16 @@ def render_template(template: str, values: dict[str, Any]) -> str:
     return PLACEHOLDER_RE.sub(repl, template or "")
 
 
+def _deep_merge(base: Any, override: Any) -> Any:
+    # 用户 prompts.json 只覆盖自己显式写出的字段，缺失的新字段自动回退到默认模板。
+    if isinstance(base, dict) and isinstance(override, dict):
+        merged = dict(base)
+        for key, value in override.items():
+            merged[key] = _deep_merge(base.get(key), value)
+        return merged
+    return override if override is not None else base
+
+
 class PromptStore:
     def __init__(self, template_path: Path, user_path: Path):
         self.template_path = template_path
@@ -31,7 +40,7 @@ class PromptStore:
         self._mtime: float | None = None
 
     def ensure_user_file(self) -> Path:
-        # 首次启动时，把插件内置模板复制到 data/plugin_data 供用户长期维护。
+        # 首次启动时，把插件内置模板复制到 data/plugin_data 供长期维护。
         self.user_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.user_path.exists():
             shutil.copyfile(self.template_path, self.user_path)
@@ -44,19 +53,26 @@ class PromptStore:
         if self._cache is not None and self._mtime == stat.st_mtime:
             return self._cache
 
-        payload = json.loads(self.user_path.read_text(encoding="utf-8"))
+        template_payload = json.loads(self.template_path.read_text(encoding="utf-8"))
+        user_payload = json.loads(self.user_path.read_text(encoding="utf-8"))
+        payload = _deep_merge(template_payload, user_payload)
         payload = self._normalize_payload(payload)
         self._cache = payload
         self._mtime = stat.st_mtime
         return payload
 
     def _normalize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        # 模板字段既支持字符串，也支持字符串数组；
-        # 数组写法更利于人工编辑和版本对比。
+        # 模板字段既支持字符串，也支持字符串数组；数组更利于人工编辑和版本对比。
         chat = payload.get("chat")
         if isinstance(chat, dict):
             chat["inject_template"] = self._normalize_template_value(
                 chat.get("inject_template", "")
+            )
+
+        summary = payload.get("summary")
+        if isinstance(summary, dict):
+            summary["rollup_template"] = self._normalize_template_value(
+                summary.get("rollup_template", "")
             )
 
         background = payload.get("background")

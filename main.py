@@ -79,7 +79,7 @@ class MnemosynePlugin(Star):
     @filter.command("mnemosyne")
     async def mnemosyne(self, event: AstrMessageEvent):
         # 最小状态命令：便于在 AstrBot 内快速确认插件是否正常工作。
-        lines = await self.service.get_status_lines()
+        lines = await self.service.get_status_lines_v2(event)
         yield event.plain_result("\n".join(lines))
 
     @filter.command("mnemo_ping")

@@ -1,7 +1,7 @@
 name: astrbot_plugin_mnemosyneS
 display_name: Mnemosyne Companion
 desc: 一个支持提示词注入、记忆存储、状态追踪与后台日记生成的 AstrBot 情感陪伴插件。
-version: v0.7.3
+version: v0.8.0
 author: Xk1390068752
 repo: "https://github.com/Xk1390068752/astrbot_plugin_mnemosyneS"
 astrbot_version: ">=4.16,<5"

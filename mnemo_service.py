@@ -109,6 +109,43 @@ def _outline_journals(journals: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _outline_relation(relation: dict[str, Any]) -> str:
+    cognition = relation.get("cognition", {})
+    if not isinstance(cognition, dict):
+        cognition = {}
+    lines = [
+        f"- favorability: {relation.get('favorability', 0)}",
+        f"- relation_stage: {relation.get('relation_stage', '') or '(none)'}",
+    ]
+    for key in ("impression", "labels", "user_traits", "wants_from_user", "risk_flags"):
+        value = cognition.get(key)
+        if value in (None, "", [], {}):
+            continue
+        lines.append(f"- {key}: {value}")
+    return "\n".join(lines) if lines else "(none)"
+
+
+def _outline_benefits(relation: dict[str, Any]) -> str:
+    benefits = relation.get("benefits", [])
+    if not isinstance(benefits, list) or not benefits:
+        return "(none)"
+    return "\n".join(f"- {str(item).strip()}" for item in benefits if str(item).strip()) or "(none)"
+
+
+def _outline_turns_for_summary(turns: list[dict[str, Any]]) -> str:
+    if not turns:
+        return "(none)"
+    lines: list[str] = []
+    for turn in turns:
+        role = str(turn.get("role", "") or "").strip() or "unknown"
+        text_key = "visible_text" if role == "assistant" else "raw_text"
+        text = str(turn.get(text_key, "") or "").strip()
+        if not text:
+            continue
+        lines.append(f"[{role}] {text}")
+    return "\n".join(lines) if lines else "(none)"
+
+
 def _message_content_to_text(content: Any) -> str:
     if content is None:
         return ""
@@ -275,6 +312,21 @@ def _extract_response_text(resp) -> str:
     return ""
 
 
+def _usage_to_dict(resp) -> dict[str, int]:
+    usage = getattr(resp, "usage", None)
+    if usage is None:
+        return {
+            "input_tokens_other": 0,
+            "input_tokens_cached": 0,
+            "output_tokens": 0,
+        }
+    return {
+        "input_tokens_other": max(int(getattr(usage, "input_other", 0) or 0), 0),
+        "input_tokens_cached": max(int(getattr(usage, "input_cached", 0) or 0), 0),
+        "output_tokens": max(int(getattr(usage, "output", 0) or 0), 0),
+    }
+
+
 def _serialize_blocks(blocks: list[HiddenBlock]) -> dict[str, Any]:
     # 隐藏块统一按名称归档，便于后续写入 turn 的 hidden_payload_json。
     payload: dict[str, list[dict[str, Any]]] = {}
@@ -294,6 +346,7 @@ def _filter_character_blocks(blocks: list[HiddenBlock]) -> list[HiddenBlock]:
     allowed_targets = {
         "character_state_patch",
         "character_emotion_patch",
+        "user_relation_patch",
         "character_memory_append",
         "journal_entry",
     }
@@ -317,21 +370,7 @@ def _extract_hidden_block_hits(text: str, specs: list[dict[str, Any]]) -> list[s
 
 def _mnemosyne_protocol_contract() -> str:
     # 这是一层硬协议兜底，用来提醒模型必须输出统一的 Mnemosyne 包装结构。
-    return (
-        "Mnemosyne output protocol is mandatory.\n"
-        "After the visible reply, you MUST output exactly one outer wrapper:\n"
-        "<mnemosyne_meta>...</mnemosyne_meta>\n"
-        "Do not place any Mnemosyne hidden blocks outside <mnemosyne_meta>.\n"
-        "Inside <mnemosyne_meta>, include any needed hidden blocks such as:\n"
-        "<character_state_patch>{...}</character_state_patch>\n"
-        "<character_emotion_patch>{...}</character_emotion_patch>\n"
-        "<character_memory_append>[...]</character_memory_append>\n"
-        "<journal_entry>...</journal_entry>\n"
-        "If nothing changed, you must still output an empty wrapper exactly as:\n"
-        "<mnemosyne_meta></mnemosyne_meta>\n"
-        "If another hidden appendix is also required by the system, place "
-        "<mnemosyne_meta> before that appendix."
-    )
+    return ("")
 
 
 def _append_protocol_contract(text: str) -> str:
@@ -392,6 +431,20 @@ class MnemosyneService:
 
     def _turn_context_limit(self) -> int:
         return max(int(self.config.get("turn_context_limit", 12)), 1)
+
+    def _summary_enabled(self) -> bool:
+        return bool(self.config.get("enable_session_summary", True))
+
+    def _summary_trigger_turns(self) -> int:
+        fallback = self._turn_context_limit()
+        return max(int(self.config.get("summary_trigger_turns", fallback)), 2)
+
+    def _summary_compact_turns(self) -> int:
+        fallback = max(self._turn_context_limit() // 2, 1)
+        return max(int(self.config.get("summary_compact_turns", fallback)), 1)
+
+    def _summary_max_chars(self) -> int:
+        return max(int(self.config.get("summary_max_chars", 150)), 50)
 
     def _poll_seconds(self) -> int:
         return max(int(self.config.get("scheduler_poll_seconds", 120)), 30)
@@ -458,6 +511,12 @@ class MnemosyneService:
             provider = self.context.get_using_provider(event.unified_msg_origin)
             return provider.meta().id if provider else ""
 
+    def _get_persona_prompt(self, persona_id: str) -> str:
+        persona = self.context.persona_manager.get_persona_v3_by_id(persona_id) or {}
+        if hasattr(persona, "get"):
+            return str(persona.get("prompt", "") or "")
+        return str(getattr(persona, "prompt", "") or "")
+
     async def _build_prompt_context(
         self, session_key: str, persona_id: str
     ) -> dict[str, Any]:
@@ -486,6 +545,43 @@ class MnemosyneService:
             "latest_journal_text": recent_journals[0]["content"] if recent_journals else "",
         }
 
+    async def _build_prompt_context_v2(self, session: dict[str, Any]) -> dict[str, Any]:
+        # 新版上下文会同时注入滚动摘要和角色对用户的长期认知。
+        character_state = await self.storage.get_state(CHARACTER_SCOPE, CHARACTER_SCOPE_KEY)
+        character_memories = await self.storage.list_recent_memories(
+            CHARACTER_SCOPE,
+            CHARACTER_SCOPE_KEY,
+            self._memory_limit(),
+        )
+        recent_journals = await self.storage.list_recent_journals(self._journal_limit())
+        session_summary = await self.storage.get_session_summary(session["session_key"])
+        relation = await self.storage.get_relation(
+            persona_id=str(session.get("persona_id", "") or ""),
+            platform_name=str(session.get("platform_name", "") or ""),
+            user_id=str(session.get("user_id", "") or ""),
+            display_name=str(session.get("display_name", "") or ""),
+        )
+        return {
+            "target_persona_id": str(session.get("persona_id", "") or ""),
+            "current_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "session_summary_text": session_summary.get("summary_text") or "(none)",
+            "character_state_json": _safe_json(character_state["state"]),
+            "character_emotion_json": _safe_json(character_state["emotion"]),
+            "character_memories_text": _outline_memories(character_memories),
+            "recent_journals_text": _outline_journals(recent_journals),
+            "latest_journal_text": recent_journals[0]["content"] if recent_journals else "",
+            "user_relation_json": _safe_json(
+                {
+                    "favorability": relation.get("favorability", 0),
+                    "relation_stage": relation.get("relation_stage", ""),
+                    "cognition": relation.get("cognition", {}),
+                    "benefits": relation.get("benefits", []),
+                }
+            ),
+            "user_relation_text": _outline_relation(relation),
+            "recent_benefits_text": _outline_benefits(relation),
+        }
+
     async def _ensure_session(self, event, persona_id: str, provider_id: str) -> None:
         # 会话表记录的是插件自己的线程视角，而不是 AstrBot 默认上下文的副本。
         session_key = event.get_extra(EXTRA_SESSION_KEY) or event.unified_msg_origin
@@ -505,6 +601,88 @@ class MnemosyneService:
         if not self._raw_logging_enabled():
             return
         await self.raw_logger.append(stage=stage, payload=payload)
+
+    async def _maybe_rollup_session_summary(self, session: dict[str, Any]) -> None:
+        # 摘要层只压缩已经发出的 chat/push 可见对话，不碰后台 journal turn。
+        if not self._summary_enabled():
+            return
+
+        trigger_turns = self._summary_trigger_turns()
+        candidate_turns = await self.storage.list_turns_for_summary(
+            session["session_key"],
+            trigger_turns + 1,
+        )
+        if len(candidate_turns) <= trigger_turns:
+            return
+
+        compact_turns = min(self._summary_compact_turns(), len(candidate_turns) - 1)
+        turns_to_compress = candidate_turns[:compact_turns]
+        if not turns_to_compress:
+            return
+
+        prompts = self.prompt_store.load()
+        template = str(prompts.get("summary", {}).get("rollup_template", "") or "").strip()
+        if not template:
+            return
+
+        existing_summary = await self.storage.get_session_summary(session["session_key"])
+        summary_prompt = render_template(
+            template,
+            {
+                "current_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "summary_max_chars": self._summary_max_chars(),
+                "existing_session_summary_text": existing_summary.get("summary_text") or "(none)",
+                "turns_for_summary_text": _outline_turns_for_summary(turns_to_compress),
+            },
+        ).strip()
+        if not summary_prompt:
+            return
+
+        provider_id = str(session.get("last_provider_id") or "")
+        if not provider_id:
+            return
+
+        persona_prompt = self._get_persona_prompt(str(session.get("persona_id", "") or ""))
+        await self._log_raw_event(
+            stage="summary_rollup_request",
+            payload={
+                "session_key": session["session_key"],
+                "persona_id": session.get("persona_id", ""),
+                "provider_id": provider_id,
+                "final_prompt_text": f"[System Prompt]\n{persona_prompt}\n\n[Prompt]\n{summary_prompt}".strip(),
+            },
+        )
+        response = await self.context.llm_generate(
+            chat_provider_id=provider_id,
+            prompt=summary_prompt,
+            system_prompt=persona_prompt,
+        )
+        raw_response_text = _extract_response_text(response)
+        await self._log_raw_event(
+            stage="summary_rollup_response_raw",
+            payload={
+                "session_key": session["session_key"],
+                "persona_id": session.get("persona_id", ""),
+                "provider_id": provider_id,
+                "raw_response_text": raw_response_text,
+            },
+        )
+
+        summary_text = str(response.completion_text or raw_response_text or "").strip()
+        if not summary_text:
+            return
+
+        summary_record = await self.storage.upsert_session_summary(
+            session_key=session["session_key"],
+            summary_text=summary_text,
+            covered_until_turn_id=str(turns_to_compress[-1]["turn_id"]),
+            covered_turn_count=len(turns_to_compress),
+            provider_id=provider_id,
+        )
+        await self.storage.mark_turns_compressed(
+            [str(turn["turn_id"]) for turn in turns_to_compress],
+            summary_record["summary_ref"],
+        )
 
     async def observe_llm_request(self, event, req) -> None:
         # 当前版本这里只做人格命中探测，保留成单独 hook 主要是为了后续扩展。
@@ -532,12 +710,14 @@ class MnemosyneService:
         provider_id = await self._resolve_provider_id(event)
         event.set_extra(EXTRA_PROVIDER_ID, provider_id)
         await self._ensure_session(event, matched["persona_id"], provider_id)
+        session = await self.storage.get_session(session_key)
+        if not session:
+            event.set_extra(EXTRA_ENABLED, False)
+            return
 
         prompts = self.prompt_store.load()
         chat_cfg = prompts.get("chat", {})
-        prompt_context = await self._build_prompt_context(
-            session_key, matched["persona_id"]
-        )
+        prompt_context = await self._build_prompt_context_v2(session)
         prompt_context["astrbot_system_prompt"] = req.system_prompt or ""
 
         # 命中目标人格后，完全改用插件自己的 turn 历史接管短期上下文。
@@ -545,6 +725,7 @@ class MnemosyneService:
             await self.storage.list_recent_turns(
                 session_key,
                 self._turn_context_limit(),
+                exclude_compressed=True,
             )
         )
 
@@ -597,6 +778,7 @@ class MnemosyneService:
         # 实际解析与入库仍以 AstrBot 当前回传给插件的 completion_text 为准。
         raw_text = resp.completion_text or ""
         raw_response_text = _extract_response_text(resp)
+        usage_payload = _usage_to_dict(resp)
         await self._log_raw_event(
             stage="chat_response_raw",
             payload={
@@ -604,6 +786,7 @@ class MnemosyneService:
                 "persona_id": event.get_extra(EXTRA_MATCHED_PERSONA, ""),
                 "provider_id": event.get_extra(EXTRA_PROVIDER_ID, ""),
                 "raw_response_text": raw_response_text,
+                "usage": usage_payload,
                 "mnemosyne_meta_present": has_mnemosyne_meta(raw_response_text),
                 "hidden_block_hits": _extract_hidden_block_hits(raw_response_text, specs),
             },
@@ -633,6 +816,7 @@ class MnemosyneService:
                 "provider_id": event.get_extra(EXTRA_PROVIDER_ID, ""),
                 "parsed_blocks": parsed.blocks,
                 "meta_present": parsed.meta_present,
+                "usage": usage_payload,
             },
         )
 
@@ -642,8 +826,10 @@ class MnemosyneService:
         if not payload:
             return
 
+        session_key = event.get_extra(EXTRA_SESSION_KEY, event.unified_msg_origin)
+        usage = payload.get("usage", {})
         turn_id = await self.storage.insert_turn(
-            session_key=event.get_extra(EXTRA_SESSION_KEY, event.unified_msg_origin),
+            session_key=session_key,
             role="assistant",
             source_type=SOURCE_CHAT,
             visible_text=payload["visible_text"],
@@ -652,9 +838,12 @@ class MnemosyneService:
             provider_id=payload["provider_id"],
             prompt_snapshot={},
             sent_at=time.time(),
+            input_tokens_other=int(usage.get("input_tokens_other", 0) or 0),
+            input_tokens_cached=int(usage.get("input_tokens_cached", 0) or 0),
+            output_tokens=int(usage.get("output_tokens", 0) or 0),
         )
         await self.storage.upsert_session(
-            session_key=event.get_extra(EXTRA_SESSION_KEY, event.unified_msg_origin),
+            session_key=session_key,
             unified_msg_origin=event.unified_msg_origin,
             platform_name=event.get_platform_name(),
             user_id=event.get_sender_id() or event.session_id,
@@ -663,18 +852,21 @@ class MnemosyneService:
             provider_id=payload["provider_id"],
             assistant_message_at=time.time(),
         )
+        session = await self.storage.get_session(session_key)
         await self._apply_hidden_blocks(
-            session_key=event.get_extra(EXTRA_SESSION_KEY, event.unified_msg_origin),
+            session=session,
             blocks=payload["parsed_blocks"],
             source_turn_id=turn_id,
             idle_since=None,
         )
+        if session:
+            await self._maybe_rollup_session_summary(session)
         event.set_extra(EXTRA_PENDING_ASSISTANT, None)
 
     async def _apply_hidden_blocks(
         self,
         *,
-        session_key: str,
+        session: dict[str, Any] | None,
         blocks: list[HiddenBlock],
         source_turn_id: str,
         idle_since: float | None,
@@ -684,6 +876,7 @@ class MnemosyneService:
         journal_text = ""
         character_state_patch: dict[str, Any] = {}
         character_emotion_patch: dict[str, Any] = {}
+        user_relation_patch: dict[str, Any] = {}
 
         for block in blocks:
             target = block.target
@@ -704,6 +897,17 @@ class MnemosyneService:
                     emotion_patch=payload,
                     source_turn_id=source_turn_id,
                 )
+            elif target == "user_relation_patch" and isinstance(payload, dict):
+                user_relation_patch = payload
+                if session:
+                    await self.storage.merge_relation(
+                        persona_id=str(session.get("persona_id", "") or ""),
+                        platform_name=str(session.get("platform_name", "") or ""),
+                        user_id=str(session.get("user_id", "") or ""),
+                        display_name=str(session.get("display_name", "") or ""),
+                        patch=payload,
+                        source_turn_id=source_turn_id,
+                    )
             elif target == "character_memory_append":
                 for item in self._normalize_memory_payload(payload):
                     await self.storage.add_memory(
@@ -725,6 +929,7 @@ class MnemosyneService:
                 state_patch={
                     "character_state_patch": character_state_patch,
                     "character_emotion_patch": character_emotion_patch,
+                    "user_relation_patch": user_relation_patch,
                 },
                 source_turn_id=source_turn_id,
                 idle_since=idle_since,
@@ -734,6 +939,7 @@ class MnemosyneService:
             "journal_text": journal_text,
             "character_state_patch": character_state_patch,
             "character_emotion_patch": character_emotion_patch,
+            "user_relation_patch": user_relation_patch,
         }
 
     def _normalize_memory_payload(self, payload: Any) -> list[dict[str, Any]]:
@@ -799,6 +1005,68 @@ class MnemosyneService:
         stats = await self.storage.get_stats()
         return self.build_status_lines(stats)
 
+    def build_status_lines_v2(
+        self,
+        stats: dict[str, Any],
+        current_session: dict[str, Any] | None = None,
+        current_session_tokens: dict[str, int] | None = None,
+        global_tokens: dict[str, int] | None = None,
+    ) -> list[str]:
+        lines = [
+            f"插件名: {PLUGIN_NAME}",
+            f"启用状态: {'开启' if self.is_enabled() else '关闭'}",
+            f"目标人格: {self._target_persona_id() or '(未设置)'}",
+            f"数据库: {self.db_path}",
+            f"提示词文件: {self.prompt_path}",
+            f"原始日志: {self.raw_log_path}",
+            f"会话数: {stats['session_count']}",
+            f"对话条目数: {stats['turn_count']}",
+            f"记忆数: {stats['memory_count']}",
+            f"日志数: {stats['journal_count']}",
+            f"滚动摘要数: {stats.get('summary_count', 0)}",
+            f"用户关系数: {stats.get('relation_count', 0)}",
+        ]
+        if current_session:
+            lines.append(f"当前插件会话: {current_session.get('session_key', '')}")
+        if current_session_tokens:
+            lines.append(
+                "当前会话 Tokens: "
+                f"in_other={current_session_tokens.get('input_other', 0)}, "
+                f"in_cached={current_session_tokens.get('input_cached', 0)}, "
+                f"out={current_session_tokens.get('output', 0)}, "
+                f"total={current_session_tokens.get('total', 0)}"
+            )
+        if global_tokens:
+            lines.append(
+                "全局 Tokens: "
+                f"in_other={global_tokens.get('input_other', 0)}, "
+                f"in_cached={global_tokens.get('input_cached', 0)}, "
+                f"out={global_tokens.get('output', 0)}, "
+                f"total={global_tokens.get('total', 0)}"
+            )
+        return lines
+
+    async def get_status_lines_v2(self, event=None) -> list[str]:
+        stats = await self.storage.get_stats()
+        current_session = None
+        current_session_tokens = None
+        if event is not None:
+            current_session = await self.storage.get_latest_session_for_origin(
+                event.unified_msg_origin,
+                self._target_persona_id(),
+            )
+            if current_session:
+                current_session_tokens = await self.storage.get_token_totals(
+                    current_session.get("session_key")
+                )
+        global_tokens = await self.storage.get_token_totals()
+        return self.build_status_lines_v2(
+            stats,
+            current_session=current_session,
+            current_session_tokens=current_session_tokens,
+            global_tokens=global_tokens,
+        )
+
     async def scheduler_tick(self) -> None:
         # service 层负责防重入；外部调度器只管定时触发。
         if not self.is_enabled() or not self._scheduler_enabled():
@@ -842,12 +1110,11 @@ class MnemosyneService:
             return
 
         persona_id = self._target_persona_id()
-        persona = self.context.persona_manager.get_persona_v3_by_id(persona_id) or {}
-        persona_prompt = str(persona.get("prompt", "") or "")
+        persona_prompt = self._get_persona_prompt(persona_id)
 
         prompts = self.prompt_store.load()
         background_cfg = prompts.get("background", {})
-        prompt_context = await self._build_prompt_context(session["session_key"], persona_id)
+        prompt_context = await self._build_prompt_context_v2(session)
         prompt_context["idle_minutes"] = int(idle_seconds // 60)
         prompt_context["astrbot_system_prompt"] = persona_prompt
 
@@ -873,6 +1140,7 @@ class MnemosyneService:
             prompt=journal_prompt,
             system_prompt=persona_prompt,
         )
+        response_usage = _usage_to_dict(response)
         await self._log_raw_event(
             stage="background_journal_response_raw",
             payload={
@@ -880,6 +1148,7 @@ class MnemosyneService:
                 "persona_id": persona_id,
                 "provider_id": provider_id,
                 "raw_response_text": _extract_response_text(response),
+                "usage": response_usage,
                 "mnemosyne_meta_present": has_mnemosyne_meta(
                     _extract_response_text(response)
                 ),
@@ -905,9 +1174,12 @@ class MnemosyneService:
             provider_id=provider_id,
             prompt_snapshot={"kind": "background_journal"},
             sent_at=time.time(),
+            input_tokens_other=int(response_usage.get("input_tokens_other", 0) or 0),
+            input_tokens_cached=int(response_usage.get("input_tokens_cached", 0) or 0),
+            output_tokens=int(response_usage.get("output_tokens", 0) or 0),
         )
         await self._apply_hidden_blocks(
-            session_key=session["session_key"],
+            session=session,
             blocks=parsed.blocks,
             source_turn_id=bg_turn_id,
             idle_since=last_user_message_at,
@@ -947,6 +1219,7 @@ class MnemosyneService:
             prompt=push_prompt,
             system_prompt=persona_prompt,
         )
+        push_usage = _usage_to_dict(push_resp)
         await self._log_raw_event(
             stage="background_push_response_raw",
             payload={
@@ -954,6 +1227,7 @@ class MnemosyneService:
                 "persona_id": persona_id,
                 "provider_id": provider_id,
                 "raw_response_text": _extract_response_text(push_resp),
+                "usage": push_usage,
                 "mnemosyne_meta_present": has_mnemosyne_meta(
                     _extract_response_text(push_resp)
                 ),
@@ -992,6 +1266,9 @@ class MnemosyneService:
             provider_id=provider_id,
             prompt_snapshot={"kind": "proactive_push", "roll": roll},
             sent_at=time.time(),
+            input_tokens_other=int(push_usage.get("input_tokens_other", 0) or 0),
+            input_tokens_cached=int(push_usage.get("input_tokens_cached", 0) or 0),
+            output_tokens=int(push_usage.get("output_tokens", 0) or 0),
         )
         await self.storage.upsert_session(
             session_key=session["session_key"],
@@ -1005,8 +1282,11 @@ class MnemosyneService:
             push_message_at=time.time(),
         )
         await self._apply_hidden_blocks(
-            session_key=session["session_key"],
+            session=session,
             blocks=parsed_push.blocks,
             source_turn_id=push_turn_id,
             idle_since=last_user_message_at,
         )
+        refreshed_session = await self.storage.get_session(session["session_key"])
+        if refreshed_session:
+            await self._maybe_rollup_session_summary(refreshed_session)

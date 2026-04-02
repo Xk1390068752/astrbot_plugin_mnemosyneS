@@ -42,6 +42,32 @@ class PromptTests(unittest.TestCase):
             self.assertEqual(payload["background"]["journal_template"], "c\nd")
             self.assertEqual(payload["background"]["active_push_template"], "e\nf")
 
+    def test_prompt_store_deep_merges_new_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            template_path = tmp_path / "template.json"
+            user_path = tmp_path / "user.json"
+            template_path.write_text(
+                (
+                    '{"chat":{"inject_template":["sys","mem"]},'
+                    '"summary":{"rollup_template":["sum-a","sum-b"]},'
+                    '"background":{"journal_template":["c"],"active_push_template":["d"]},'
+                    '"hidden_blocks":[{"name":"user_relation_patch"}]}'
+                ),
+                encoding="utf-8",
+            )
+            user_path.write_text(
+                '{"chat":{"inject_template":["user-only"]},"background":{"journal_template":["custom-journal"]}}',
+                encoding="utf-8",
+            )
+            store = PromptStore(template_path, user_path)
+            payload = store.load()
+            self.assertEqual(payload["chat"]["inject_template"], "user-only")
+            self.assertEqual(payload["summary"]["rollup_template"], "sum-a\nsum-b")
+            self.assertEqual(payload["background"]["journal_template"], "custom-journal")
+            self.assertEqual(payload["background"]["active_push_template"], "d")
+            self.assertEqual(payload["hidden_blocks"][0]["name"], "user_relation_patch")
+
 
 class ParserTests(unittest.TestCase):
     def test_parse_hidden_blocks(self):
@@ -199,6 +225,115 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(journals[0]["content"], "今天看见下雨了")
             self.assertEqual(turns[0]["role"], "assistant")
             self.assertEqual(stats["session_count"], 1)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    async def test_storage_supports_summary_relation_dedupe_and_tokens(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            db_path = Path(tmp) / "mnemo.sqlite3"
+            storage = MnemoStorage(db_path)
+            await storage.initialize()
+            await storage.upsert_session(
+                session_key="demo",
+                unified_msg_origin="friend:123",
+                platform_name="qq",
+                user_id="u1",
+                display_name="tester",
+                persona_id="persona-a",
+                provider_id="provider-a",
+                user_message_at=1.0,
+            )
+            user_turn = await storage.insert_turn(
+                session_key="demo",
+                role="user",
+                source_type="chat",
+                visible_text="hello",
+                raw_text="hello",
+                hidden_payload={},
+                provider_id="provider-a",
+                prompt_snapshot={},
+                sent_at=1.5,
+            )
+            assistant_turn = await storage.insert_turn(
+                session_key="demo",
+                role="assistant",
+                source_type="chat",
+                visible_text="reply",
+                raw_text="reply",
+                hidden_payload={},
+                provider_id="provider-a",
+                prompt_snapshot={},
+                sent_at=2.0,
+                input_tokens_other=11,
+                input_tokens_cached=3,
+                output_tokens=7,
+            )
+            await storage.add_memory(
+                scope_type="character",
+                scope_key="global",
+                content="likes tea",
+                memory_type="fact",
+                importance=0.5,
+                metadata={},
+                source_turn_id=assistant_turn,
+            )
+            await storage.add_memory(
+                scope_type="character",
+                scope_key="global",
+                content=" likes   tea ",
+                memory_type="fact",
+                importance=0.9,
+                metadata={},
+                source_turn_id=assistant_turn,
+            )
+            relation = await storage.merge_relation(
+                persona_id="persona-a",
+                platform_name="qq",
+                user_id="u1",
+                display_name="tester",
+                patch={
+                    "favorability": 65,
+                    "relation_stage": "friend",
+                    "impression": "warm",
+                    "labels": ["talkative"],
+                    "benefits": ["comfort", "comfort", "attention"],
+                },
+                source_turn_id=assistant_turn,
+            )
+            summary = await storage.upsert_session_summary(
+                session_key="demo",
+                summary_text="summary text",
+                covered_until_turn_id=user_turn,
+                covered_turn_count=1,
+                provider_id="provider-a",
+            )
+            await storage.mark_turns_compressed([user_turn], summary["summary_ref"])
+
+            memories = await storage.list_recent_memories("character", "global", 10)
+            relation_row = await storage.get_relation("persona-a", "qq", "u1", "tester")
+            session_summary = await storage.get_session_summary("demo")
+            turns = await storage.list_recent_turns("demo", 10, exclude_compressed=True)
+            token_totals = await storage.get_token_totals("demo")
+            global_totals = await storage.get_token_totals()
+            latest_origin_session = await storage.get_latest_session_for_origin(
+                "friend:123",
+                "persona-a",
+            )
+
+            self.assertEqual(len(memories), 1)
+            self.assertAlmostEqual(memories[0]["importance"], 0.9)
+            self.assertEqual(relation["favorability"], 65)
+            self.assertEqual(relation_row["relation_stage"], "friend")
+            self.assertEqual(relation_row["benefits"], ["comfort", "attention"])
+            self.assertEqual(session_summary["summary_text"], "summary text")
+            self.assertEqual(len(turns), 1)
+            self.assertEqual(turns[0]["turn_id"], assistant_turn)
+            self.assertEqual(token_totals["input_other"], 11)
+            self.assertEqual(token_totals["input_cached"], 3)
+            self.assertEqual(token_totals["output"], 7)
+            self.assertEqual(global_totals["total"], 21)
+            self.assertEqual(latest_origin_session["session_key"], "demo")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

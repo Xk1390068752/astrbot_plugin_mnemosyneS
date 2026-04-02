@@ -43,12 +43,12 @@
   },
   "memory_window_size": {
     "type": "int",
-    "description": "注入提示词时读取的最近记忆条数",
+    "description": "注入提示词时读取的最近角色记忆条数",
     "default": 12
   },
   "journal_window_size": {
     "type": "int",
-    "description": "注入提示词时读取的最近日志条数",
+    "description": "注入提示词时读取的最近角色日志条数",
     "default": 6
   },
   "turn_context_limit": {
@@ -56,6 +56,27 @@
     "description": "命中人格时使用 mnemo_turn 重建的短期对话上下文条数",
     "hint": "命中目标 persona 后，AstrBot 原生 contexts 会被插件自己的 mnemo_turn 上下文完全接管。",
     "default": 12
+  },
+  "enable_session_summary": {
+    "type": "bool",
+    "description": "是否启用会话滚动摘要",
+    "hint": "开启后，过长对话会把最老的一段压缩为摘要，减少失忆。",
+    "default": true
+  },
+  "summary_trigger_turns": {
+    "type": "int",
+    "description": "未压缩 turn 超过多少条后触发一次摘要",
+    "default": 12
+  },
+  "summary_compact_turns": {
+    "type": "int",
+    "description": "每次摘要压缩最老的多少条 turn",
+    "default": 6
+  },
+  "summary_max_chars": {
+    "type": "int",
+    "description": "滚动摘要建议的最大字符数",
+    "default": 150
   },
   "enable_background_journal": {
     "type": "bool",
