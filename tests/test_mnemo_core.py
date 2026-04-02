@@ -25,7 +25,7 @@ class PromptTests(unittest.TestCase):
             store = PromptStore(template_path, user_path)
             payload = store.load()
             self.assertTrue(user_path.exists())
-            self.assertEqual(payload["ok"], True)
+            self.assertTrue(payload["ok"])
 
     def test_prompt_store_joins_template_arrays(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -47,17 +47,17 @@ class ParserTests(unittest.TestCase):
     def test_parse_hidden_blocks(self):
         text = (
             "可见内容\n"
-            "<user_state_patch>{\"mood\": \"warm\"}</user_state_patch>\n"
-            "<journal_entry>今天散步了。</journal_entry>"
+            "<character_state_patch>{\"mood\": \"warm\"}</character_state_patch>\n"
+            "<journal_entry>今天散步了</journal_entry>"
         )
         parsed = parse_hidden_blocks(
             text,
             [
                 {
-                    "name": "user_state_patch",
-                    "target": "user_state_patch",
+                    "name": "character_state_patch",
+                    "target": "character_state_patch",
                     "mode": "json",
-                    "pattern": "<user_state_patch>([\\s\\S]*?)</user_state_patch>",
+                    "pattern": "<character_state_patch>([\\s\\S]*?)</character_state_patch>",
                 },
                 {
                     "name": "journal_entry",
@@ -69,17 +69,17 @@ class ParserTests(unittest.TestCase):
         )
         self.assertEqual(parsed.visible_text, "可见内容")
         self.assertEqual(parsed.blocks[0].payload["mood"], "warm")
-        self.assertEqual(parsed.blocks[1].payload, "今天散步了。")
+        self.assertEqual(parsed.blocks[1].payload, "今天散步了")
 
     def test_parse_hidden_blocks_tolerates_bad_json(self):
         parsed = parse_hidden_blocks(
-            "<user_state_patch>{bad json}</user_state_patch>",
+            "<character_state_patch>{bad json}</character_state_patch>",
             [
                 {
-                    "name": "user_state_patch",
-                    "target": "user_state_patch",
+                    "name": "character_state_patch",
+                    "target": "character_state_patch",
                     "mode": "json",
-                    "pattern": "<user_state_patch>([\\s\\S]*?)</user_state_patch>",
+                    "pattern": "<character_state_patch>([\\s\\S]*?)</character_state_patch>",
                 }
             ],
         )
@@ -88,7 +88,7 @@ class ParserTests(unittest.TestCase):
 
     def test_parse_mnemosyne_response_requires_outer_wrapper(self):
         parsed = parse_mnemosyne_response(
-            "visible\n<mnemosyne_meta><user_state_patch>{\"mood\":\"warm\"}</user_state_patch><journal_entry>note</journal_entry></mnemosyne_meta>",
+            "visible\n<mnemosyne_meta><character_state_patch>{\"mood\":\"warm\"}</character_state_patch><journal_entry>note</journal_entry></mnemosyne_meta>",
             [
                 {
                     "name": "mnemosyne_meta",
@@ -97,10 +97,10 @@ class ParserTests(unittest.TestCase):
                     "pattern": "<mnemosyne_meta>([\\s\\S]*?)</mnemosyne_meta>",
                 },
                 {
-                    "name": "user_state_patch",
-                    "target": "user_state_patch",
+                    "name": "character_state_patch",
+                    "target": "character_state_patch",
                     "mode": "json",
-                    "pattern": "<user_state_patch>([\\s\\S]*?)</user_state_patch>",
+                    "pattern": "<character_state_patch>([\\s\\S]*?)</character_state_patch>",
                 },
                 {
                     "name": "journal_entry",
@@ -112,20 +112,20 @@ class ParserTests(unittest.TestCase):
         )
         self.assertTrue(parsed.meta_present)
         self.assertEqual(parsed.visible_text, "visible")
-        self.assertEqual(parsed.blocks[0].target, "user_state_patch")
+        self.assertEqual(parsed.blocks[0].target, "character_state_patch")
         self.assertEqual(parsed.blocks[0].payload["mood"], "warm")
         self.assertEqual(parsed.blocks[1].target, "journal_entry")
         self.assertEqual(parsed.blocks[1].payload, "note")
 
-    def test_parse_mnemosyne_response_without_wrapper_ignores_inner_blocks(self):
+    def test_parse_mnemosyne_response_without_wrapper_keeps_legacy_fallback(self):
         parsed = parse_mnemosyne_response(
-            "visible\n<user_state_patch>{\"mood\":\"warm\"}</user_state_patch>",
+            "visible\n<character_state_patch>{\"mood\":\"warm\"}</character_state_patch>",
             [
                 {
-                    "name": "user_state_patch",
-                    "target": "user_state_patch",
+                    "name": "character_state_patch",
+                    "target": "character_state_patch",
                     "mode": "json",
-                    "pattern": "<user_state_patch>([\\s\\S]*?)</user_state_patch>",
+                    "pattern": "<character_state_patch>([\\s\\S]*?)</character_state_patch>",
                 }
             ],
         )
@@ -180,8 +180,8 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
                 source_turn_id=turn_id,
             )
             await storage.insert_journal(
-                content="今天看了雨。",
-                summary="今天看了雨。",
+                content="今天看见下雨了",
+                summary="今天看见下雨了",
                 state_patch={"weather": "rain"},
                 source_turn_id=turn_id,
                 idle_since=0.0,
@@ -190,12 +190,14 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             state = await storage.get_state("user", "demo")
             memories = await storage.list_recent_memories("user", "demo", 5)
             journals = await storage.list_recent_journals(5)
+            turns = await storage.list_recent_turns("demo", 5)
             stats = await storage.get_stats()
 
             self.assertEqual(state["state"]["trust"], 3)
             self.assertEqual(state["emotion"]["mood"], "calm")
             self.assertEqual(memories[0]["memory_type"], "preference")
-            self.assertEqual(journals[0]["content"], "今天看了雨。")
+            self.assertEqual(journals[0]["content"], "今天看见下雨了")
+            self.assertEqual(turns[0]["role"], "assistant")
             self.assertEqual(stats["session_count"], 1)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

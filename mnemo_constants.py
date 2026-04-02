@@ -1,5 +1,5 @@
 PLUGIN_NAME = "astrbot_plugin_mnemosyneS"
-PLUGIN_VERSION = "0.6.0"
+PLUGIN_VERSION = "0.7.0"
 PLUGIN_AUTHOR = "Xk1390068752"
 PLUGIN_REPO = "https://github.com/Xk1390068752/astrbot_plugin_mnemosyneS"
 
@@ -19,6 +19,7 @@ EXTRA_MATCHED_PERSONA = "_mnemo_matched_persona_id"
 EXTRA_PROVIDER_ID = "_mnemo_provider_id"
 EXTRA_USER_TURN_ID = "_mnemo_user_turn_id"
 EXTRA_PENDING_ASSISTANT = "_mnemo_pending_assistant"
+EXTRA_SESSION_KEY = "_mnemo_session_key"
 
 DEFAULT_DB_FILENAME = "mnemosyne.sqlite3"
 DEFAULT_PROMPTS_FILENAME = "prompts.json"

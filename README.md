@@ -3,14 +3,15 @@
 一个面向 AstrBot 人设陪伴场景的插件。
 
 当前版本支持这些核心能力：
-- 命中指定 Persona 时，拦截 LLM 请求并把记忆、状态、日记注入到 AstrBot 原始提示词里
+- 命中指定 Persona 时，拦截 LLM 请求并把角色状态、角色记忆、角色日志注入到提示词里
+- 命中指定 Persona 时，插件完全接管该人格的短期对话上下文，AstrBot 原生 `req.contexts` 不再参与发给 LLM
+- 插件短期上下文基于 `mnemo_turn` 和 AstrBot `conversation_id` 重建，因此 `/new` `/del` 的会话切换会自然同步到插件
 - 每轮对话落库，保存用户与角色聊天记录
-- 使用 SQLite 持久化角色状态、用户状态、情感、记忆与日记
+- 使用 SQLite 持久化角色状态、角色记忆与角色日志
 - 在空闲时后台生成角色动态轨迹
 - 按概率主动向最近私聊用户发起消息
 - 通过隐藏标签从模型回复中提取结构化内容，并在发给用户前剥离
 - 把发送给 LLM 的最终完整提示词和模型原始回包记录为 `jsonl` 调试日志
-- 采用强制性的 `<mnemosyne_meta>...</mnemosyne_meta>` 隐藏协议包装记忆更新
 
 ## 目录说明
 
@@ -38,8 +39,8 @@
 `raw_llm.jsonl` 当前会记录这些阶段：
 - `chat_request_final`: 真正发给 LLM 的最终完整提示词文本
 - `chat_response_raw`: 模型原始回包文本
-- `background_journal_request`: 后台日记生成的最终完整提示词文本
-- `background_journal_response_raw`: 后台日记生成的原始回包文本
+- `background_journal_request`: 后台日志生成的最终完整提示词文本
+- `background_journal_response_raw`: 后台日志生成的原始回包文本
 - `background_push_request`: 主动私聊生成的最终完整提示词文本
 - `background_push_response_raw`: 主动私聊生成的原始回包文本
 
@@ -50,13 +51,9 @@
 插件默认采用类似 SillyTavern 的隐藏标签机制。模型可以在可见回复后追加这些标签：
 
 - 外层必须是 `<mnemosyne_meta>...</mnemosyne_meta>`
-
 - `<character_state_patch>{...}</character_state_patch>`
 - `<character_emotion_patch>{...}</character_emotion_patch>`
-- `<user_state_patch>{...}</user_state_patch>`
-- `<user_emotion_patch>{...}</user_emotion_patch>`
 - `<character_memory_append>[...]</character_memory_append>`
-- `<user_memory_append>[...]</user_memory_append>`
 - `<journal_entry>...</journal_entry>`
 
 插件会：

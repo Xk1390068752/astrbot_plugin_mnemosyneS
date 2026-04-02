@@ -21,6 +21,7 @@ try:
         EXTRA_MATCHED_PERSONA,
         EXTRA_PENDING_ASSISTANT,
         EXTRA_PROVIDER_ID,
+        EXTRA_SESSION_KEY,
         EXTRA_USER_TURN_ID,
         PLUGIN_NAME,
         SOURCE_BACKGROUND,
@@ -43,6 +44,7 @@ except ImportError:
         EXTRA_MATCHED_PERSONA,
         EXTRA_PENDING_ASSISTANT,
         EXTRA_PROVIDER_ID,
+        EXTRA_SESSION_KEY,
         EXTRA_USER_TURN_ID,
         PLUGIN_NAME,
         SOURCE_BACKGROUND,
@@ -196,6 +198,30 @@ def _build_final_prompt_text(req) -> str:
         sections.append("[Image URLs]\n" + "\n".join(str(url) for url in image_urls))
 
     return "\n\n".join(section for section in sections if section).strip()
+
+
+def _conversation_context_session_key(req, event) -> str:
+    conversation = getattr(req, "conversation", None)
+    if conversation:
+        cid = getattr(conversation, "cid", None) or getattr(
+            conversation, "conversation_id", None
+        )
+        if cid:
+            return str(cid)
+    return str(event.unified_msg_origin)
+
+
+def _turns_to_contexts(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    contexts: list[dict[str, Any]] = []
+    for turn in reversed(turns):
+        role = str(turn.get("role", "") or "").strip()
+        if role not in {"user", "assistant"}:
+            continue
+        text = str(turn.get("raw_text", "") or "").strip()
+        if not text:
+            continue
+        contexts.append({"role": role, "content": text})
+    return contexts
 
 
 def _collect_text_fragments(value: Any, results: list[str]) -> None:
@@ -352,6 +378,9 @@ class MnemosyneService:
     def _journal_limit(self) -> int:
         return max(int(self.config.get("journal_window_size", 6)), 1)
 
+    def _turn_context_limit(self) -> int:
+        return max(int(self.config.get("turn_context_limit", 12)), 1)
+
     def _poll_seconds(self) -> int:
         return max(int(self.config.get("scheduler_poll_seconds", 120)), 30)
 
@@ -441,8 +470,9 @@ class MnemosyneService:
         }
 
     async def _ensure_session(self, event, persona_id: str, provider_id: str) -> None:
+        session_key = event.get_extra(EXTRA_SESSION_KEY) or event.unified_msg_origin
         await self.storage.upsert_session(
-            session_key=event.unified_msg_origin,
+            session_key=session_key,
             unified_msg_origin=event.unified_msg_origin,
             platform_name=event.get_platform_name(),
             user_id=event.get_sender_id() or event.session_id,
@@ -476,6 +506,8 @@ class MnemosyneService:
 
         event.set_extra(EXTRA_ENABLED, True)
         event.set_extra(EXTRA_MATCHED_PERSONA, matched["persona_id"])
+        session_key = _conversation_context_session_key(req, event)
+        event.set_extra(EXTRA_SESSION_KEY, session_key)
 
         provider_id = await self._resolve_provider_id(event)
         event.set_extra(EXTRA_PROVIDER_ID, provider_id)
@@ -484,9 +516,16 @@ class MnemosyneService:
         prompts = self.prompt_store.load()
         chat_cfg = prompts.get("chat", {})
         prompt_context = await self._build_prompt_context(
-            event.unified_msg_origin, matched["persona_id"]
+            session_key, matched["persona_id"]
         )
         prompt_context["astrbot_system_prompt"] = req.system_prompt or ""
+
+        req.contexts = _turns_to_contexts(
+            await self.storage.list_recent_turns(
+                session_key,
+                self._turn_context_limit(),
+            )
+        )
 
         inject_template = str(chat_cfg.get("inject_template", "") or "")
         rendered_prompt = render_template(inject_template, prompt_context)
@@ -498,7 +537,7 @@ class MnemosyneService:
         await self._log_raw_event(
             stage="chat_request_final",
             payload={
-                "session_key": event.unified_msg_origin,
+                "session_key": session_key,
                 "persona_id": matched["persona_id"],
                 "provider_id": provider_id,
                 "final_prompt_text": _build_final_prompt_text(req),
@@ -509,7 +548,7 @@ class MnemosyneService:
             return
 
         user_turn_id = await self.storage.insert_turn(
-            session_key=event.unified_msg_origin,
+            session_key=session_key,
             role="user",
             source_type=SOURCE_CHAT,
             visible_text=event.get_message_outline(),
@@ -519,6 +558,7 @@ class MnemosyneService:
             prompt_snapshot={
                 "selected_persona_id": matched["persona_id"],
                 "system_prompt_after": req.system_prompt,
+                "session_key": session_key,
             },
             sent_at=time.time(),
         )
@@ -537,7 +577,7 @@ class MnemosyneService:
         await self._log_raw_event(
             stage="chat_response_raw",
             payload={
-                "session_key": event.unified_msg_origin,
+                "session_key": event.get_extra(EXTRA_SESSION_KEY, event.unified_msg_origin),
                 "persona_id": event.get_extra(EXTRA_MATCHED_PERSONA, ""),
                 "provider_id": event.get_extra(EXTRA_PROVIDER_ID, ""),
                 "raw_response_text": raw_response_text,
@@ -578,7 +618,7 @@ class MnemosyneService:
             return
 
         turn_id = await self.storage.insert_turn(
-            session_key=event.unified_msg_origin,
+            session_key=event.get_extra(EXTRA_SESSION_KEY, event.unified_msg_origin),
             role="assistant",
             source_type=SOURCE_CHAT,
             visible_text=payload["visible_text"],
@@ -589,7 +629,7 @@ class MnemosyneService:
             sent_at=time.time(),
         )
         await self.storage.upsert_session(
-            session_key=event.unified_msg_origin,
+            session_key=event.get_extra(EXTRA_SESSION_KEY, event.unified_msg_origin),
             unified_msg_origin=event.unified_msg_origin,
             platform_name=event.get_platform_name(),
             user_id=event.get_sender_id() or event.session_id,
@@ -599,7 +639,7 @@ class MnemosyneService:
             assistant_message_at=time.time(),
         )
         await self._apply_hidden_blocks(
-            session_key=event.unified_msg_origin,
+            session_key=event.get_extra(EXTRA_SESSION_KEY, event.unified_msg_origin),
             blocks=payload["parsed_blocks"],
             source_turn_id=turn_id,
             idle_since=None,

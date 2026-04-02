@@ -492,6 +492,55 @@ class MnemoStorage:
                 for row in rows
             ]
 
+    async def list_recent_turns(
+        self,
+        session_key: str,
+        limit: int,
+        include_source_types: tuple[str, ...] = ("chat", "push"),
+    ) -> list[dict[str, Any]]:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._list_recent_turns_sync,
+                session_key,
+                limit,
+                include_source_types,
+            )
+
+    def _list_recent_turns_sync(
+        self,
+        session_key: str,
+        limit: int,
+        include_source_types: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        placeholders = ",".join("?" for _ in include_source_types)
+        query = f"""
+            SELECT turn_id, session_key, role, source_type, visible_text, raw_text,
+                   hidden_payload_json, provider_id, prompt_snapshot_json, created_at, sent_at
+            FROM mnemo_turn
+            WHERE session_key = ? AND source_type IN ({placeholders})
+            ORDER BY created_at DESC
+            LIMIT ?
+        """
+        params: list[Any] = [session_key, *include_source_types, limit]
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [
+                {
+                    "turn_id": row["turn_id"],
+                    "session_key": row["session_key"],
+                    "role": row["role"],
+                    "source_type": row["source_type"],
+                    "visible_text": row["visible_text"],
+                    "raw_text": row["raw_text"],
+                    "hidden_payload": _json_loads(row["hidden_payload_json"], {}),
+                    "provider_id": row["provider_id"],
+                    "prompt_snapshot": _json_loads(row["prompt_snapshot_json"], {}),
+                    "created_at": row["created_at"],
+                    "sent_at": row["sent_at"],
+                }
+                for row in rows
+            ]
+
     async def insert_journal(
         self,
         *,
