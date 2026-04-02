@@ -1,7 +1,7 @@
-PLUGIN_NAME = "astrbot_plugin_mnemosyne"
+PLUGIN_NAME = "astrbot_plugin_mnemosyneS"
 PLUGIN_VERSION = "0.3.0"
 PLUGIN_AUTHOR = "Xk1390068752"
-PLUGIN_REPO = "https://github.com/Xk1390068752/astrbot_plugin_mnemosyne"
+PLUGIN_REPO = "https://github.com/Xk1390068752/astrbot_plugin_mnemosyneS"
 
 CHARACTER_SCOPE = "character"
 USER_SCOPE = "user"

@@ -20,13 +20,13 @@
   "database_path": {
     "type": "string",
     "description": "SQLite 数据库文件路径",
-    "hint": "留空则默认使用 data/plugin_data/astrbot_plugin_mnemosyne/mnemosyne.sqlite3",
+    "hint": "留空则默认使用 data/plugin_data/astrbot_plugin_mnemosyneS/mnemosyne.sqlite3",
     "default": ""
   },
   "prompt_json_path": {
     "type": "string",
     "description": "提示词 JSON 文件路径",
-    "hint": "留空则默认使用 data/plugin_data/astrbot_plugin_mnemosyne/prompts.json；首次启动会自动生成。",
+    "hint": "留空则默认使用 data/plugin_data/astrbot_plugin_mnemosyneS/prompts.json；首次启动会自动生成。",
     "default": ""
   },
   "enable_raw_llm_logging": {
@@ -38,7 +38,7 @@
   "raw_llm_log_path": {
     "type": "string",
     "description": "原始 LLM 日志文件路径",
-    "hint": "留空则默认使用 data/plugin_data/astrbot_plugin_mnemosyne/raw_llm.jsonl",
+    "hint": "留空则默认使用 data/plugin_data/astrbot_plugin_mnemosyneS/raw_llm.jsonl",
     "default": ""
   },
   "memory_window_size": {

@@ -1,1 +1,1 @@
-"""astrbot_plugin_mnemosyne package."""
+"""astrbot_plugin_mnemosyneS package."""

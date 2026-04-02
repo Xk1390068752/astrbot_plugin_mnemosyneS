@@ -1,4 +1,4 @@
-# astrbot_plugin_mnemosyne
+# astrbot_plugin_mnemosyneS
 
 一个面向 AstrBot 人设陪伴场景的插件。
 
@@ -27,9 +27,9 @@
 2. 在 WebUI 中为插件配置 `target_persona_id`。
 3. 启动 AstrBot。
 4. 首次启动后，插件会自动创建：
-   - `data/plugin_data/astrbot_plugin_mnemosyne/mnemosyne.sqlite3`
-   - `data/plugin_data/astrbot_plugin_mnemosyne/prompts.json`
-   - `data/plugin_data/astrbot_plugin_mnemosyne/raw_llm.jsonl`
+   - `data/plugin_data/astrbot_plugin_mnemosyneS/mnemosyne.sqlite3`
+   - `data/plugin_data/astrbot_plugin_mnemosyneS/prompts.json`
+   - `data/plugin_data/astrbot_plugin_mnemosyneS/raw_llm.jsonl`
 5. 修改 `prompts.json`，把你的实际人设提示词和隐藏标签输出规则写进去。
 6. 发送 `/mnemosyne` 查看插件状态。
 
