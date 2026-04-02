@@ -15,6 +15,7 @@ try:
         CHARACTER_SCOPE_KEY,
         DEFAULT_DB_FILENAME,
         DEFAULT_PROMPTS_FILENAME,
+        DEFAULT_RAW_LOG_FILENAME,
         EXTRA_ENABLED,
         EXTRA_MATCHED_PERSONA,
         EXTRA_PENDING_ASSISTANT,
@@ -29,6 +30,7 @@ try:
     from .mnemo_parser import HiddenBlock, parse_hidden_blocks
     from .mnemo_paths import get_default_prompts_template_path, resolve_user_path
     from .mnemo_prompts import PromptStore, render_template
+    from .mnemo_raw_logger import RawLLMLogger
     from .mnemo_storage import MnemoStorage
 except ImportError:
     from mnemo_constants import (
@@ -36,6 +38,7 @@ except ImportError:
         CHARACTER_SCOPE_KEY,
         DEFAULT_DB_FILENAME,
         DEFAULT_PROMPTS_FILENAME,
+        DEFAULT_RAW_LOG_FILENAME,
         EXTRA_ENABLED,
         EXTRA_MATCHED_PERSONA,
         EXTRA_PENDING_ASSISTANT,
@@ -50,6 +53,7 @@ except ImportError:
     from mnemo_parser import HiddenBlock, parse_hidden_blocks
     from mnemo_paths import get_default_prompts_template_path, resolve_user_path
     from mnemo_prompts import PromptStore, render_template
+    from mnemo_raw_logger import RawLLMLogger
     from mnemo_storage import MnemoStorage
 
 
@@ -104,11 +108,15 @@ class MnemosyneService:
         self.prompt_path = resolve_user_path(
             self.config.get("prompt_json_path", ""), DEFAULT_PROMPTS_FILENAME
         )
+        self.raw_log_path = resolve_user_path(
+            self.config.get("raw_llm_log_path", ""), DEFAULT_RAW_LOG_FILENAME
+        )
         self.storage = MnemoStorage(self.db_path)
         self.prompt_store = PromptStore(
             get_default_prompts_template_path(),
             self.prompt_path,
         )
+        self.raw_logger = RawLLMLogger(self.raw_log_path)
 
     async def initialize(self) -> None:
         self.prompt_store.ensure_user_file()
@@ -122,6 +130,9 @@ class MnemosyneService:
 
     def _scheduler_enabled(self) -> bool:
         return bool(self.config.get("enable_background_journal", True))
+
+    def _raw_logging_enabled(self) -> bool:
+        return bool(self.config.get("enable_raw_llm_logging", True))
 
     def _target_persona_id(self) -> str:
         return str(self.config.get("target_persona_id", "") or "").strip()
@@ -238,6 +249,11 @@ class MnemosyneService:
             user_message_at=time.time(),
         )
 
+    async def _log_raw_event(self, *, stage: str, payload: dict[str, Any]) -> None:
+        if not self._raw_logging_enabled():
+            return
+        await self.raw_logger.append(stage=stage, payload=payload)
+
     async def on_llm_request(self, event, req) -> None:
         matched = await self._match_target_persona(
             event,
@@ -253,6 +269,17 @@ class MnemosyneService:
         provider_id = await self._resolve_provider_id(event)
         event.set_extra(EXTRA_PROVIDER_ID, provider_id)
         await self._ensure_session(event, matched["persona_id"], provider_id)
+        await self._log_raw_event(
+            stage="chat_request_before_injection",
+            payload={
+                "session_key": event.unified_msg_origin,
+                "persona_id": matched["persona_id"],
+                "provider_id": provider_id,
+                "prompt": req.prompt,
+                "system_prompt": req.system_prompt,
+                "contexts": req.contexts,
+            },
+        )
 
         prompts = self.prompt_store.load()
         chat_cfg = prompts.get("chat", {})
@@ -267,6 +294,17 @@ class MnemosyneService:
             req.system_prompt = f"{req.system_prompt or ''}\n\n{rendered_prompt}".strip()
         else:
             req.system_prompt = rendered_prompt
+        await self._log_raw_event(
+            stage="chat_request_final",
+            payload={
+                "session_key": event.unified_msg_origin,
+                "persona_id": matched["persona_id"],
+                "provider_id": provider_id,
+                "prompt": req.prompt,
+                "system_prompt": req.system_prompt,
+                "contexts": req.contexts,
+            },
+        )
 
         if event.get_extra(EXTRA_USER_TURN_ID):
             return
@@ -296,6 +334,18 @@ class MnemosyneService:
         prompts = self.prompt_store.load()
         specs = prompts.get("hidden_blocks", [])
         raw_text = resp.completion_text or ""
+        await self._log_raw_event(
+            stage="chat_response_raw",
+            payload={
+                "session_key": event.unified_msg_origin,
+                "persona_id": event.get_extra(EXTRA_MATCHED_PERSONA, ""),
+                "provider_id": event.get_extra(EXTRA_PROVIDER_ID, ""),
+                "response_text": raw_text,
+                "reasoning_content": getattr(resp, "reasoning_content", ""),
+                "tools_call_name": getattr(resp, "tools_call_name", []),
+                "tools_call_args": getattr(resp, "tools_call_args", []),
+            },
+        )
 
         try:
             parsed = parse_hidden_blocks(raw_text, specs)
@@ -488,6 +538,7 @@ class MnemosyneService:
             f"目标人格: {self._target_persona_id() or '(未设置)'}",
             f"数据库: {self.db_path}",
             f"提示词文件: {self.prompt_path}",
+            f"原始日志: {self.raw_log_path}",
             f"会话数: {stats['session_count']}",
             f"对话条目数: {stats['turn_count']}",
             f"记忆数: {stats['memory_count']}",
@@ -554,11 +605,30 @@ class MnemosyneService:
         )
         if not journal_prompt.strip():
             return
+        await self._log_raw_event(
+            stage="background_journal_request",
+            payload={
+                "session_key": session["session_key"],
+                "persona_id": persona_id,
+                "provider_id": provider_id,
+                "prompt": journal_prompt,
+                "system_prompt": persona_prompt,
+            },
+        )
 
         response = await self.context.llm_generate(
             chat_provider_id=provider_id,
             prompt=journal_prompt,
             system_prompt=persona_prompt,
+        )
+        await self._log_raw_event(
+            stage="background_journal_response_raw",
+            payload={
+                "session_key": session["session_key"],
+                "persona_id": persona_id,
+                "provider_id": provider_id,
+                "response_text": response.completion_text or "",
+            },
         )
         parsed = parse_hidden_blocks(
             response.completion_text or "",
@@ -600,11 +670,30 @@ class MnemosyneService:
         )
         if not push_prompt.strip():
             return
+        await self._log_raw_event(
+            stage="background_push_request",
+            payload={
+                "session_key": session["session_key"],
+                "persona_id": persona_id,
+                "provider_id": provider_id,
+                "prompt": push_prompt,
+                "system_prompt": persona_prompt,
+            },
+        )
 
         push_resp = await self.context.llm_generate(
             chat_provider_id=provider_id,
             prompt=push_prompt,
             system_prompt=persona_prompt,
+        )
+        await self._log_raw_event(
+            stage="background_push_response_raw",
+            payload={
+                "session_key": session["session_key"],
+                "persona_id": persona_id,
+                "provider_id": provider_id,
+                "response_text": push_resp.completion_text or "",
+            },
         )
         parsed_push = parse_hidden_blocks(
             push_resp.completion_text or "",

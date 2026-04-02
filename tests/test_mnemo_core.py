@@ -27,6 +27,21 @@ class PromptTests(unittest.TestCase):
             self.assertTrue(user_path.exists())
             self.assertEqual(payload["ok"], True)
 
+    def test_prompt_store_joins_template_arrays(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            template_path = tmp_path / "template.json"
+            user_path = tmp_path / "user.json"
+            template_path.write_text(
+                '{"chat":{"inject_template":["a","b"]},"background":{"journal_template":["c","d"],"active_push_template":["e","f"]}}',
+                encoding="utf-8",
+            )
+            store = PromptStore(template_path, user_path)
+            payload = store.load()
+            self.assertEqual(payload["chat"]["inject_template"], "a\nb")
+            self.assertEqual(payload["background"]["journal_template"], "c\nd")
+            self.assertEqual(payload["background"]["active_push_template"], "e\nf")
+
 
 class ParserTests(unittest.TestCase):
     def test_parse_hidden_blocks(self):

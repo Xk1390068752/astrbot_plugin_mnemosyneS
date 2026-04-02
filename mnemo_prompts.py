@@ -41,6 +41,32 @@ class PromptStore:
             return self._cache
 
         payload = json.loads(self.user_path.read_text(encoding="utf-8"))
+        payload = self._normalize_payload(payload)
         self._cache = payload
         self._mtime = stat.st_mtime
         return payload
+
+    def _normalize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        chat = payload.get("chat")
+        if isinstance(chat, dict):
+            chat["inject_template"] = self._normalize_template_value(
+                chat.get("inject_template", "")
+            )
+
+        background = payload.get("background")
+        if isinstance(background, dict):
+            background["journal_template"] = self._normalize_template_value(
+                background.get("journal_template", "")
+            )
+            background["active_push_template"] = self._normalize_template_value(
+                background.get("active_push_template", "")
+            )
+
+        return payload
+
+    def _normalize_template_value(self, value: Any) -> str:
+        if isinstance(value, list) and all(isinstance(item, str) for item in value):
+            return "\n".join(value)
+        if value is None:
+            return ""
+        return str(value)

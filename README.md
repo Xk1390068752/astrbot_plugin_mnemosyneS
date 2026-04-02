@@ -10,6 +10,7 @@
 - 支持空闲时后台生成角色动态轨迹
 - 支持按概率主动向最近私聊用户发起消息
 - 支持通过隐藏标签从模型回复中提取结构化内容，并在发给用户前剥离
+- 支持把发送给 LLM 的完整请求与收到的原始回复记录为 `jsonl` 日志
 
 ## 目录说明
 
@@ -28,6 +29,7 @@
 4. 首次启动后，插件会自动创建：
    - `data/plugin_data/astrbot_plugin_mnemosyne/mnemosyne.sqlite3`
    - `data/plugin_data/astrbot_plugin_mnemosyne/prompts.json`
+   - `data/plugin_data/astrbot_plugin_mnemosyne/raw_llm.jsonl`
 5. 修改 `prompts.json`，把你的实际人设提示词和隐藏标签输出规则写进去。
 6. 发送 `/mnemosyne` 查看插件状态。
 
@@ -48,6 +50,12 @@
 - 捕获这些标签
 - 将内容写入数据库
 - 在发给用户前把这些标签从正文剥离
+
+## prompts.json 编辑说明
+
+- 模板字段可以继续写成 JSON 字符串，此时换行需要用 `\\n`
+- 现在也支持写成字符串数组，插件会自动用换行拼接
+- `hidden_blocks` 里的 `pattern` 仍然是正则表达式，里面的反斜杠需要保持 JSON 转义
 
 ## 说明
 
