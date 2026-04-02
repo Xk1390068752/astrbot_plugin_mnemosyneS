@@ -18,16 +18,10 @@ def get_default_prompts_template_path() -> Path:
 
 
 def get_plugin_data_dir(plugin_name: str = PLUGIN_NAME) -> Path:
-    # 优先走 AstrBot 官方插件数据目录；
-    # 如果当前环境拿不到，再退回到本地工作目录下的 data/plugin_data。
-    try:
-        from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+    # 按 AstrBot 官方插件数据目录规范取路径，避免自行拼接工作目录。
+    from astrbot.api.star import StarTools
 
-        base = Path(get_astrbot_plugin_data_path())
-    except Exception:
-        base = Path.cwd() / "data" / "plugin_data"
-
-    target = base / plugin_name
+    target = StarTools.get_data_dir(plugin_name)
     target.mkdir(parents=True, exist_ok=True)
     return target
 

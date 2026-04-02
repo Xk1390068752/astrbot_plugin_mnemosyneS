@@ -72,18 +72,18 @@ def _to_jsonable(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         try:
             return _to_jsonable(value.model_dump())
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.debug("mnemosyne model_dump serialize skipped: %s", exc)
     if hasattr(value, "dict"):
         try:
             return _to_jsonable(value.dict())
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.debug("mnemosyne dict serialize skipped: %s", exc)
     if hasattr(value, "__dict__"):
         try:
             return _to_jsonable(vars(value))
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.debug("mnemosyne __dict__ serialize skipped: %s", exc)
     return repr(value)
 
 
@@ -307,8 +307,8 @@ def _extract_response_text(resp) -> str:
             plain = result_chain.get_plain_text().strip()
             if plain:
                 return plain
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.debug("mnemosyne result_chain text extract skipped: %s", exc)
     return ""
 
 
@@ -507,7 +507,8 @@ class MnemosyneService:
             return await self.context.get_current_chat_provider_id(
                 umo=event.unified_msg_origin
             )
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+            logger.debug("mnemosyne fallback to legacy provider resolve: %s", exc)
             provider = self.context.get_using_provider(event.unified_msg_origin)
             return provider.meta().id if provider else ""
 
@@ -1101,10 +1102,7 @@ class MnemosyneService:
             if now - recent_journals[0]["generated_at"] < cooldown:
                 return
 
-        provider_id = str(session.get("last_provider_id") or "")
-        if not provider_id:
-            provider = self.context.get_using_provider()
-            provider_id = provider.meta().id if provider else ""
+        provider_id = await self._resolve_scheduler_provider_id(session)
         if not provider_id:
             logger.warning("mnemosyne scheduler skipped: no provider found")
             return
@@ -1118,6 +1116,50 @@ class MnemosyneService:
         prompt_context["idle_minutes"] = int(idle_seconds // 60)
         prompt_context["astrbot_system_prompt"] = persona_prompt
 
+        await self._run_background_journal(
+            session=session,
+            provider_id=provider_id,
+            persona_id=persona_id,
+            persona_prompt=persona_prompt,
+            prompts=prompts,
+            background_cfg=background_cfg,
+            prompt_context=prompt_context,
+            last_user_message_at=last_user_message_at,
+        )
+
+        await self._maybe_run_active_push(
+            session=session,
+            provider_id=provider_id,
+            persona_id=persona_id,
+            persona_prompt=persona_prompt,
+            prompts=prompts,
+            background_cfg=background_cfg,
+            prompt_context=prompt_context,
+            last_user_message_at=last_user_message_at,
+            now=now,
+        )
+
+    async def _resolve_scheduler_provider_id(self, session: dict[str, Any]) -> str:
+        # 后台任务优先沿用最近一次命中人格时的 provider，避免和前台配置脱节。
+        provider_id = str(session.get("last_provider_id") or "")
+        if provider_id:
+            return provider_id
+        provider = self.context.get_using_provider()
+        return provider.meta().id if provider else ""
+
+    async def _run_background_journal(
+        self,
+        *,
+        session: dict[str, Any],
+        provider_id: str,
+        persona_id: str,
+        persona_prompt: str,
+        prompts: dict[str, Any],
+        background_cfg: dict[str, Any],
+        prompt_context: dict[str, Any],
+        last_user_message_at: float,
+    ) -> None:
+        # 只负责一次幕后日记生成和落库，不参与主动推送的概率判断。
         journal_prompt = render_template(
             str(background_cfg.get("journal_template", "") or ""),
             prompt_context,
@@ -1125,6 +1167,7 @@ class MnemosyneService:
         journal_prompt = _append_protocol_contract(journal_prompt)
         if not journal_prompt.strip():
             return
+
         await self._log_raw_event(
             stage="background_journal_request",
             payload={
@@ -1141,19 +1184,19 @@ class MnemosyneService:
             system_prompt=persona_prompt,
         )
         response_usage = _usage_to_dict(response)
+        raw_response_text = _extract_response_text(response)
         await self._log_raw_event(
             stage="background_journal_response_raw",
             payload={
                 "session_key": session["session_key"],
                 "persona_id": persona_id,
                 "provider_id": provider_id,
-                "raw_response_text": _extract_response_text(response),
+                "raw_response_text": raw_response_text,
                 "usage": response_usage,
-                "mnemosyne_meta_present": has_mnemosyne_meta(
-                    _extract_response_text(response)
-                ),
+                "mnemosyne_meta_present": has_mnemosyne_meta(raw_response_text),
             },
         )
+
         parsed = parse_mnemosyne_response(
             response.completion_text or "",
             prompts.get("hidden_blocks", []),
@@ -1164,6 +1207,7 @@ class MnemosyneService:
                 "mnemosyne background journal missing <mnemosyne_meta> wrapper for session %s",
                 session["session_key"],
             )
+
         bg_turn_id = await self.storage.insert_turn(
             session_key=session["session_key"],
             role="assistant",
@@ -1185,6 +1229,20 @@ class MnemosyneService:
             idle_since=last_user_message_at,
         )
 
+    async def _maybe_run_active_push(
+        self,
+        *,
+        session: dict[str, Any],
+        provider_id: str,
+        persona_id: str,
+        persona_prompt: str,
+        prompts: dict[str, Any],
+        background_cfg: dict[str, Any],
+        prompt_context: dict[str, Any],
+        last_user_message_at: float,
+        now: float,
+    ) -> None:
+        # 主动推送拆成单独方法，后续更方便继续扩概率、冷却和风格控制。
         probability = self._active_push_probability()
         if probability <= 0:
             return
@@ -1204,6 +1262,7 @@ class MnemosyneService:
         push_prompt = _append_protocol_contract(push_prompt)
         if not push_prompt.strip():
             return
+
         await self._log_raw_event(
             stage="background_push_request",
             payload={
@@ -1220,19 +1279,19 @@ class MnemosyneService:
             system_prompt=persona_prompt,
         )
         push_usage = _usage_to_dict(push_resp)
+        raw_response_text = _extract_response_text(push_resp)
         await self._log_raw_event(
             stage="background_push_response_raw",
             payload={
                 "session_key": session["session_key"],
                 "persona_id": persona_id,
                 "provider_id": provider_id,
-                "raw_response_text": _extract_response_text(push_resp),
+                "raw_response_text": raw_response_text,
                 "usage": push_usage,
-                "mnemosyne_meta_present": has_mnemosyne_meta(
-                    _extract_response_text(push_resp)
-                ),
+                "mnemosyne_meta_present": has_mnemosyne_meta(raw_response_text),
             },
         )
+
         parsed_push = parse_mnemosyne_response(
             push_resp.completion_text or "",
             prompts.get("hidden_blocks", []),
@@ -1243,6 +1302,7 @@ class MnemosyneService:
                 "mnemosyne proactive push missing <mnemosyne_meta> wrapper for session %s",
                 session["session_key"],
             )
+
         visible_text = parsed_push.visible_text.strip()
         if not visible_text:
             logger.warning("mnemosyne scheduler skipped empty proactive visible text")

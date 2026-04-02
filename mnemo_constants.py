@@ -1,5 +1,5 @@
 PLUGIN_NAME = "astrbot_plugin_mnemosyneS"
-PLUGIN_VERSION = "0.8.0"
+PLUGIN_VERSION = "0.8.1"
 PLUGIN_AUTHOR = "Xk1390068752"
 PLUGIN_REPO = "https://github.com/Xk1390068752/astrbot_plugin_mnemosyneS"
 
