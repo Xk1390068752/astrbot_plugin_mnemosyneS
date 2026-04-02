@@ -61,6 +61,31 @@ def _safe_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
 
 
+def _to_jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_jsonable(v) for v in value]
+    if hasattr(value, "model_dump"):
+        try:
+            return _to_jsonable(value.model_dump())
+        except Exception:
+            pass
+    if hasattr(value, "dict"):
+        try:
+            return _to_jsonable(value.dict())
+        except Exception:
+            pass
+    if hasattr(value, "__dict__"):
+        try:
+            return _to_jsonable(vars(value))
+        except Exception:
+            pass
+    return repr(value)
+
+
 def _outline_memories(memories: list[dict[str, Any]]) -> str:
     if not memories:
         return "(none)"
@@ -278,6 +303,10 @@ class MnemosyneService:
                 "prompt": req.prompt,
                 "system_prompt": req.system_prompt,
                 "contexts": req.contexts,
+                "image_urls": getattr(req, "image_urls", []),
+                "extra_user_content_parts": _to_jsonable(
+                    getattr(req, "extra_user_content_parts", [])
+                ),
             },
         )
 
@@ -303,6 +332,10 @@ class MnemosyneService:
                 "prompt": req.prompt,
                 "system_prompt": req.system_prompt,
                 "contexts": req.contexts,
+                "image_urls": getattr(req, "image_urls", []),
+                "extra_user_content_parts": _to_jsonable(
+                    getattr(req, "extra_user_content_parts", [])
+                ),
             },
         )
 
@@ -340,10 +373,18 @@ class MnemosyneService:
                 "session_key": event.unified_msg_origin,
                 "persona_id": event.get_extra(EXTRA_MATCHED_PERSONA, ""),
                 "provider_id": event.get_extra(EXTRA_PROVIDER_ID, ""),
-                "response_text": raw_text,
+                "completion_text": raw_text,
+                "result_chain_plain_text": resp.result_chain.get_plain_text()
+                if getattr(resp, "result_chain", None)
+                else None,
+                "result_chain": _to_jsonable(
+                    getattr(getattr(resp, "result_chain", None), "chain", None)
+                ),
+                "raw_completion": _to_jsonable(getattr(resp, "raw_completion", None)),
                 "reasoning_content": getattr(resp, "reasoning_content", ""),
                 "tools_call_name": getattr(resp, "tools_call_name", []),
                 "tools_call_args": getattr(resp, "tools_call_args", []),
+                "tools_call_ids": getattr(resp, "tools_call_ids", []),
             },
         )
 
@@ -627,7 +668,13 @@ class MnemosyneService:
                 "session_key": session["session_key"],
                 "persona_id": persona_id,
                 "provider_id": provider_id,
-                "response_text": response.completion_text or "",
+                "completion_text": response.completion_text or "",
+                "result_chain": _to_jsonable(
+                    getattr(getattr(response, "result_chain", None), "chain", None)
+                ),
+                "raw_completion": _to_jsonable(
+                    getattr(response, "raw_completion", None)
+                ),
             },
         )
         parsed = parse_hidden_blocks(
@@ -692,7 +739,13 @@ class MnemosyneService:
                 "session_key": session["session_key"],
                 "persona_id": persona_id,
                 "provider_id": provider_id,
-                "response_text": push_resp.completion_text or "",
+                "completion_text": push_resp.completion_text or "",
+                "result_chain": _to_jsonable(
+                    getattr(getattr(push_resp, "result_chain", None), "chain", None)
+                ),
+                "raw_completion": _to_jsonable(
+                    getattr(push_resp, "raw_completion", None)
+                ),
             },
         )
         parsed_push = parse_hidden_blocks(
